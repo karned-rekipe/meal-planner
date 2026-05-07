@@ -5,7 +5,7 @@ import pytest
 
 from adapters.input.fastmcp.prompts import MealPlanPrompts
 from application.services.meal_plan_service import MealPlanService
-from domain.models.meal_plan import MealPlan
+from tests.units.factories import meal_plan
 
 
 @pytest.fixture
@@ -50,8 +50,8 @@ async def test_explore_empty_catalog(client):
 
 
 async def test_explore_lists_meal_plan_names(client, service):
-    await service.create(MealPlan(name="Farine"))
-    await service.create(MealPlan(name="Sel"))
+    await service.create(meal_plan(name="Farine"))
+    await service.create(meal_plan(name="Sel"))
     result = await client.get_prompt("explore_meal_plans", {})
     text = _text(result)
     assert "Farine" in text
@@ -60,7 +60,7 @@ async def test_explore_lists_meal_plan_names(client, service):
 
 async def test_explore_shows_total_count(client, service):
     for i in range(3):
-        await service.create(MealPlan(name=f"Item {i}"))
+        await service.create(meal_plan(name=f"Item {i}"))
     result = await client.get_prompt("explore_meal_plans", {})
     assert "3" in _text(result)
 

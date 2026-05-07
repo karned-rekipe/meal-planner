@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
 import fastmcp
@@ -7,7 +7,7 @@ import pytest
 
 from adapters.input.fastmcp.resources import MealPlanResources
 from application.services.meal_plan_service import MealPlanService
-from domain.models.meal_plan import MealPlan
+from tests.units.factories import meal_plan
 
 
 @pytest.fixture
@@ -41,14 +41,14 @@ async def test_sample_empty(client):
 
 async def test_sample_returns_at_most_5(client, service):
     for i in range(8):
-        await service.create(MealPlan(name=f"MealPlan {i:02d}"))
+        await service.create(meal_plan(name=f"MealPlan {i:02d}"))
     result = await client.read_resource("resource://meal-plans/sample")
     assert len(_json(result)) <= 5
 
 
 async def test_sample_is_oldest_first(client, service):
     for i in range(6):
-        await service.create(MealPlan(name=f"Item {i:02d}"))
+        await service.create(meal_plan(name=f"Item {i:02d}"))
     result = await client.read_resource("resource://meal-plans/sample")
     data = _json(result)
     assert len(data) == 5
@@ -65,14 +65,14 @@ async def test_recent_empty(client):
 
 async def test_recent_returns_at_most_10(client, service):
     for i in range(12):
-        await service.create(MealPlan(name=f"MealPlan {i:02d}"))
+        await service.create(meal_plan(name=f"MealPlan {i:02d}"))
     result = await client.read_resource("resource://meal-plans/recent")
     assert len(_json(result)) <= 10
 
 
 async def test_recent_is_newest_first(client, service):
     for i in range(12):
-        await service.create(MealPlan(name=f"Item {i:02d}"))
+        await service.create(meal_plan(name=f"Item {i:02d}"))
     result = await client.read_resource("resource://meal-plans/recent")
     data = _json(result)
     assert len(data) == 10
@@ -83,7 +83,7 @@ async def test_recent_is_newest_first(client, service):
 # --- resource://meal-plan/{uuid} ---
 
 async def test_get_resource_found(client, service):
-    item = await service.create(MealPlan(name="Sel"))
+    item = await service.create(meal_plan(name="Sel"))
     result = await client.read_resource(f"resource://meal-plan/{item.uuid}")
     data = _json(result)
     assert data is not None
