@@ -1,3 +1,5 @@
+import json
+from typing import Any
 from uuid import UUID
 
 from arclith.adapters.output.duckdb.repository import DuckDBRepository
@@ -6,13 +8,27 @@ from domain.models.household_schedule import HouseholdSchedule, HouseholdSchedul
 from domain.ports.output.household_schedule_repository import HouseholdScheduleRepository
 
 
+class _DuckDBHouseholdScheduleRuleRepository(DuckDBRepository[HouseholdScheduleRule]):
+    def _row_to_entity(self, row: dict[str, Any]) -> HouseholdScheduleRule:
+        payload = dict(row)
+        member_ids = payload.get("member_ids")
+        if isinstance(member_ids, str):
+            payload["member_ids"] = json.loads(member_ids)
+        return super()._row_to_entity(payload)
+
+    def _entity_to_row(self, entity: HouseholdScheduleRule) -> dict[str, Any]:
+        row = super()._entity_to_row(entity)
+        row["member_ids"] = json.dumps([str(member_id) for member_id in entity.member_ids])
+        return row
+
+
 class DuckDBHouseholdScheduleRepository(
     DuckDBRepository[HouseholdSchedule],
     HouseholdScheduleRepository,
 ):
     def __init__(self, path: str) -> None:
         super().__init__(path, HouseholdSchedule)
-        self._rules = DuckDBRepository(path, HouseholdScheduleRule)
+        self._rules = _DuckDBHouseholdScheduleRuleRepository(path, HouseholdScheduleRule)
 
     async def get_singleton(self) -> HouseholdSchedule | None:
         active = [item for item in await self.find_all() if not item.is_deleted]

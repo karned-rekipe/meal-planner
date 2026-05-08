@@ -24,6 +24,21 @@ class HeadcountSource(StrEnum):
     MANUAL = "manual"
 
 
+class Gender(StrEnum):
+    MALE = "male"
+    FEMALE = "female"
+
+
+class MemberType(StrEnum):
+    RESIDENT = "resident"
+    RECURRING_GUEST = "recurring_guest"
+
+
+class ScheduleMode(StrEnum):
+    HEADCOUNT = "headcount"
+    MEMBERS = "members"
+
+
 class WeekParity(StrEnum):
     EVEN = "even"
     ODD = "odd"

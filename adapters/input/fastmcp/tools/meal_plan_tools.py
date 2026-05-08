@@ -217,7 +217,7 @@ class MealPlanMCP:
             existing, _ = await service.get_household_schedule()
             schedule, rules = await service.update_household_schedule(
                 payload.to_domain(),
-                [rule.to_domain(existing.uuid) for rule in payload.rules],
+                [rule.to_domain(existing.uuid, payload.schedule_mode) for rule in payload.rules],
                 expected_version,
             )
             return household_schedule_to_schema(schedule, rules).model_dump(mode="json")

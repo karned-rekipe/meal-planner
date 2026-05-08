@@ -45,3 +45,7 @@ class TenantPreferencesNotFound(MealPlannerError):
 
 class SchoolVacationPeriodNotFound(MealPlannerError):
     """Raised when a school vacation period cannot be found."""
+
+
+class HouseholdMemberNotFound(MealPlannerError):
+    """Raised when a household member cannot be found."""

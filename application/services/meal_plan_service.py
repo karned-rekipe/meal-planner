@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from arclith import BaseService, Logger
 from domain.exceptions import (
+    HouseholdMemberNotFound,
     IngredientNotFound,
     InvalidMealPlanOperation,
     InvalidStatusTransition,
@@ -20,11 +21,13 @@ from domain.models.enums import (
     HeadcountSource,
     MealItemType,
     MealPlanStatus,
+    ScheduleMode,
     SchoolPeriodType,
     SchoolZone,
     SlotCode,
     WeekParity,
 )
+from domain.models.household_member import HouseholdMember
 from domain.models.household_schedule import HouseholdSchedule, HouseholdScheduleRule
 from domain.models.ingredient_snapshot import IngredientSnapshot
 from domain.models.legacy_meal_plan_entry import LegacyMealPlanEntry
@@ -35,6 +38,7 @@ from domain.models.recipe_snapshot import RecipeSnapshot
 from domain.models.school_vacation_period import SchoolVacationPeriod
 from domain.models.tenant_preferences import TenantPreferences
 from domain.ports.output.household_schedule_repository import HouseholdScheduleRepository
+from domain.ports.output.household_member_repository import HouseholdMemberRepository
 from domain.ports.output.meal_plan_repository import MealPlanRepository
 from domain.ports.output.recipe_client import RecipeClient
 from domain.ports.output.school_vacation_period_repository import SchoolVacationPeriodRepository
@@ -116,6 +120,7 @@ class MealPlanService(BaseService[MealPlan]):
         recipe_client: RecipeClient | None = None,
         tenant_preferences_repository: TenantPreferencesRepository | None = None,
         household_schedule_repository: HouseholdScheduleRepository | None = None,
+        household_member_repository: HouseholdMemberRepository | None = None,
         school_vacation_period_repository: SchoolVacationPeriodRepository | None = None,
     ) -> None:
         super().__init__(repository, logger, retention_days)
@@ -123,6 +128,7 @@ class MealPlanService(BaseService[MealPlan]):
         self._recipe_client = recipe_client
         self._tenant_preferences_repo = tenant_preferences_repository
         self._household_schedule_repo = household_schedule_repository
+        self._household_member_repo = household_member_repository
         self._school_vacation_period_repo = school_vacation_period_repository
         self._idempotency_cache: dict[str, MealPlan] = {}
 
@@ -412,15 +418,69 @@ class MealPlanService(BaseService[MealPlan]):
                 "updated_at": datetime.now(timezone.utc),
             },
         )
-        normalized_rules = [
-            rule.model_copy(update={"household_schedule_id": existing.uuid})
-            for rule in rules
-        ]
+        normalized_rules = await self._normalize_household_schedule_rules(existing.uuid, schedule.schedule_mode, rules)
         if self._household_schedule_repo is None:
             return updated, normalized_rules
         saved_schedule = await self._household_schedule_repo.save_singleton(updated)
         saved_rules = await self._household_schedule_repo.replace_rules(saved_schedule.uuid, normalized_rules)
         return saved_schedule, saved_rules
+
+    async def list_household_members(self) -> list[HouseholdMember]:
+        if self._household_member_repo is None:
+            return []
+        return await self._household_member_repo.list_all()
+
+    async def create_household_member(self, member: HouseholdMember) -> HouseholdMember:
+        if self._household_member_repo is None:
+            return member
+        return await self._household_member_repo.save(member)
+
+    async def update_household_member(
+        self,
+        uuid: UUID,
+        member: HouseholdMember,
+        expected_version: int,
+    ) -> HouseholdMember:
+        existing = await self._get_existing_household_member(uuid)
+        self._assert_version(existing, expected_version)
+        updated = member.model_copy(
+            update={
+                "uuid": existing.uuid,
+                "created_at": existing.created_at,
+                "created_by": existing.created_by,
+                "avatar_data": existing.avatar_data,
+                "version": existing.version + 1,
+                "updated_at": datetime.now(timezone.utc),
+            },
+        )
+        if self._household_member_repo is None:
+            return updated
+        return await self._household_member_repo.save(updated)
+
+    async def update_household_member_avatar(
+        self,
+        uuid: UUID,
+        avatar_data: str,
+        expected_version: int,
+    ) -> HouseholdMember:
+        existing = await self._get_existing_household_member(uuid)
+        self._assert_version(existing, expected_version)
+        updated = existing.model_copy(
+            update={
+                "avatar_data": avatar_data,
+                "version": existing.version + 1,
+                "updated_at": datetime.now(timezone.utc),
+            },
+        )
+        if self._household_member_repo is None:
+            return updated
+        return await self._household_member_repo.save(updated)
+
+    async def delete_household_member(self, uuid: UUID, expected_version: int) -> None:
+        existing = await self._get_existing_household_member(uuid)
+        self._assert_version(existing, expected_version)
+        if self._household_member_repo is not None:
+            await self._household_member_repo.delete(uuid)
 
     async def list_school_vacation_periods(self) -> list[SchoolVacationPeriod]:
         if self._school_vacation_period_repo is None:
@@ -674,6 +734,7 @@ class MealPlanService(BaseService[MealPlan]):
         if not rules:
             return plan
 
+        active_member_ids = await self._active_household_member_ids() if schedule.schedule_mode == ScheduleMode.MEMBERS else None
         rule_by_key = {
             (rule.week_parity, rule.school_period_type, rule.day_of_week, rule.meal_slot_code): rule
             for rule in rules
@@ -701,10 +762,17 @@ class MealPlanService(BaseService[MealPlan]):
             if rule is None:
                 slots.append(slot)
                 continue
+            headcount = rule.headcount
+            if schedule.schedule_mode == ScheduleMode.MEMBERS:
+                headcount = len([
+                    member_id
+                    for member_id in rule.member_ids
+                    if active_member_ids is None or member_id in active_member_ids
+                ])
             slots.append(
                 slot.model_copy(
                     update={
-                        "headcount": rule.headcount,
+                        "headcount": headcount,
                         "headcount_source": HeadcountSource.HOUSEHOLD_SCHEDULE,
                     },
                 ),
@@ -1076,6 +1144,40 @@ class MealPlanService(BaseService[MealPlan]):
             raise SchoolVacationPeriodNotFound(f"SchoolVacationPeriod {uuid} not found")
         return existing
 
+    async def _get_existing_household_member(self, uuid: UUID) -> HouseholdMember:
+        if self._household_member_repo is None:
+            raise HouseholdMemberNotFound(f"HouseholdMember {uuid} not found")
+        existing = await self._household_member_repo.find(uuid)
+        if existing is None:
+            raise HouseholdMemberNotFound(f"HouseholdMember {uuid} not found")
+        return existing
+
+    async def _active_household_member_ids(self) -> set[UUID] | None:
+        if self._household_member_repo is None:
+            return None
+        return {member.uuid for member in await self._household_member_repo.list_all()}
+
+    async def _normalize_household_schedule_rules(
+        self,
+        household_schedule_id: UUID,
+        schedule_mode: ScheduleMode,
+        rules: list[HouseholdScheduleRule],
+    ) -> list[HouseholdScheduleRule]:
+        active_member_ids = await self._active_household_member_ids() if schedule_mode == ScheduleMode.MEMBERS else None
+        normalized_rules: list[HouseholdScheduleRule] = []
+        for rule in rules:
+            updates: dict[str, object] = {"household_schedule_id": household_schedule_id}
+            if schedule_mode == ScheduleMode.MEMBERS:
+                member_ids = [
+                    member_id
+                    for member_id in rule.member_ids
+                    if active_member_ids is None or member_id in active_member_ids
+                ]
+                updates["member_ids"] = member_ids
+                updates["headcount"] = len(member_ids)
+            normalized_rules.append(rule.model_copy(update=updates))
+        return normalized_rules
+
     async def _assert_household_schedule_rules_are_valid(self, rules: list[HouseholdScheduleRule]) -> None:
         slot_codes = set(await self._meal_slot_codes())
         seen: set[tuple[WeekParity, SchoolPeriodType, DayOfWeek, SlotCode]] = set()
@@ -1099,7 +1201,7 @@ class MealPlanService(BaseService[MealPlan]):
 
     @staticmethod
     def _assert_version(
-        entity: MealPlan | TenantPreferences | HouseholdSchedule | SchoolVacationPeriod,
+        entity: MealPlan | TenantPreferences | HouseholdSchedule | SchoolVacationPeriod | HouseholdMember,
         expected_version: int,
     ) -> None:
         if entity.version != expected_version:

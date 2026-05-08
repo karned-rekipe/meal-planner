@@ -6,6 +6,7 @@ from adapters.output.memory.repository import (
 )
 from domain.models.enums import (
     DayOfWeek,
+    ScheduleMode,
     SchoolPeriodType,
     SchoolZone,
     VacationPeriodSource,
@@ -17,7 +18,7 @@ from domain.models.school_vacation_period import SchoolVacationPeriod
 
 async def test_household_schedule_singleton_and_rules():
     repo = InMemoryHouseholdScheduleRepository()
-    schedule = await repo.save_singleton(HouseholdSchedule(school_zone=SchoolZone.A))
+    schedule = await repo.save_singleton(HouseholdSchedule(school_zone=SchoolZone.A, schedule_mode=ScheduleMode.MEMBERS))
     rule = HouseholdScheduleRule(
         household_schedule_id=schedule.uuid,
         week_parity=WeekParity.EVEN,
@@ -25,6 +26,7 @@ async def test_household_schedule_singleton_and_rules():
         day_of_week=DayOfWeek.MONDAY,
         meal_slot_code="lunch",
         headcount=4,
+        member_ids=[],
     )
 
     await repo.replace_rules(schedule.uuid, [rule])
@@ -39,6 +41,7 @@ async def test_household_schedule_singleton_and_rules():
     assert await repo.get_singleton() == schedule
     assert found is not None
     assert found.headcount == 4
+    assert found.member_ids == []
 
 
 async def test_manual_vacation_period_matches_any_zone():

@@ -3,11 +3,12 @@ from uuid import UUID
 from pydantic import Field, field_validator
 
 from arclith.domain.models.entity import Entity
-from domain.models.enums import DayOfWeek, SchoolPeriodType, SchoolZone, SlotCode, WeekParity
+from domain.models.enums import DayOfWeek, ScheduleMode, SchoolPeriodType, SchoolZone, SlotCode, WeekParity
 
 
 class HouseholdSchedule(Entity):
     school_zone: SchoolZone | None = None
+    schedule_mode: ScheduleMode = ScheduleMode.HEADCOUNT
 
 
 class HouseholdScheduleRule(Entity):
@@ -17,6 +18,7 @@ class HouseholdScheduleRule(Entity):
     day_of_week: DayOfWeek
     meal_slot_code: SlotCode = Field(..., min_length=1, max_length=80)
     headcount: int = Field(..., ge=0, le=20)
+    member_ids: list[UUID] = Field(default_factory=list)
 
     @field_validator("meal_slot_code", mode="before")
     @classmethod

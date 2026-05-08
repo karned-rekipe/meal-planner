@@ -9,10 +9,12 @@ from arclith.adapters.output.mongodb.config import MongoDBConfig
 from arclith.domain.ports.logger import Logger
 from arclith.domain.ports.repository import Repository
 from arclith.infrastructure.config import AppConfig
+from domain.models.household_member import HouseholdMember
 from domain.models.household_schedule import HouseholdSchedule
 from domain.models.meal_plan import MealPlan
 from domain.models.school_vacation_period import SchoolVacationPeriod
 from domain.models.tenant_preferences import TenantPreferences
+from domain.ports.output.household_member_repository import HouseholdMemberRepository
 from domain.ports.output.household_schedule_repository import HouseholdScheduleRepository
 from domain.ports.output.meal_plan_repository import MealPlanRepository
 from domain.ports.output.recipe_client import RecipeClient
@@ -56,6 +58,12 @@ def _build_memory_household_schedule(cfg: AppConfig, log: Logger) -> Repository[
     return InMemoryHouseholdScheduleRepository()
 
 
+def _build_memory_household_member(cfg: AppConfig, log: Logger) -> Repository[HouseholdMember]:
+    from adapters.output.memory.repository import InMemoryHouseholdMemberRepository
+
+    return InMemoryHouseholdMemberRepository()
+
+
 def _build_memory_school_vacation_periods(cfg: AppConfig, log: Logger) -> Repository[SchoolVacationPeriod]:
     from adapters.output.memory.repository import InMemorySchoolVacationPeriodRepository
 
@@ -82,6 +90,18 @@ def _build_mongodb_household_schedule(cfg: AppConfig, log: Logger) -> Repository
         raise RuntimeError("MongoDB settings are required when repository=mongodb")
     return MongoDBHouseholdScheduleRepository(
         MongoDBConfig(uri=mongo.uri, db_name=mongo.db_name, collection_name="household_schedules"),
+        log,
+    )
+
+
+def _build_mongodb_household_member(cfg: AppConfig, log: Logger) -> Repository[HouseholdMember]:
+    from adapters.output.mongodb.repository import MongoDBHouseholdMemberRepository
+
+    mongo = cfg.adapters.mongodb
+    if mongo is None:
+        raise RuntimeError("MongoDB settings are required when repository=mongodb")
+    return MongoDBHouseholdMemberRepository(
+        MongoDBConfig(uri=mongo.uri, db_name=mongo.db_name, collection_name="household_members"),
         log,
     )
 
@@ -139,6 +159,13 @@ _household_schedule_registry = cast(
     .register("duckdb", _build_duckdb_household_schedule)  # type: ignore[arg-type]
 )
 
+_household_member_registry = cast(
+    AdapterRegistry[HouseholdMember],
+    AdapterRegistry[HouseholdMember]()
+    .register("memory", _build_memory_household_member)  # type: ignore[arg-type]
+    .register("mongodb", _build_mongodb_household_member)  # type: ignore[arg-type]
+)
+
 _school_vacation_period_registry = cast(
     AdapterRegistry[SchoolVacationPeriod],
     AdapterRegistry[SchoolVacationPeriod]()
@@ -166,6 +193,7 @@ def build_meal_plan_service(arclith: Arclith) -> tuple[MealPlanService, Logger]:
     arclith.logger.info("🗄️ Repository adapter selected", adapter=arclith.config.adapters.repository)
     repo: MealPlanRepository = cast(MealPlanRepository, _registry.build(arclith.config, arclith.logger))
     preferences_repo: TenantPreferencesRepository | None = None
+    household_member_repo: HouseholdMemberRepository | None = None
     household_schedule_repo: HouseholdScheduleRepository | None = cast(
         HouseholdScheduleRepository,
         _household_schedule_registry.build(arclith.config, arclith.logger),
@@ -179,6 +207,10 @@ def build_meal_plan_service(arclith: Arclith) -> tuple[MealPlanService, Logger]:
             TenantPreferencesRepository,
             _preferences_registry.build(arclith.config, arclith.logger),
         )
+        household_member_repo = cast(
+            HouseholdMemberRepository,
+            _household_member_registry.build(arclith.config, arclith.logger),
+        )
     return (
         MealPlanService(
             repo,
@@ -187,6 +219,7 @@ def build_meal_plan_service(arclith: Arclith) -> tuple[MealPlanService, Logger]:
             recipe_client=_build_recipe_client(),
             tenant_preferences_repository=preferences_repo,
             household_schedule_repository=household_schedule_repo,
+            household_member_repository=household_member_repo,
             school_vacation_period_repository=school_vacation_period_repo,
         ),
         arclith.logger,

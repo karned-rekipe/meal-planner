@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from arclith.adapters.input.schemas.base_schema import BaseSchema
 from domain.models.enums import (
     DayOfWeek,
+    ScheduleMode,
     SchoolPeriodType,
     SchoolZone,
     SlotCode,
@@ -30,21 +31,28 @@ class HouseholdScheduleRulePayload(BaseModel):
     school_period_type: SchoolPeriodType
     day_of_week: DayOfWeek
     meal_slot_code: SlotCode = Field(..., min_length=1, max_length=80)
-    headcount: int = Field(..., ge=0, le=20)
+    headcount: int = Field(0, ge=0, le=20)
+    member_ids: list[StdUUID] = Field(default_factory=list)
 
     @field_validator("meal_slot_code", mode="before")
     @classmethod
     def strip_meal_slot_code(cls, value: object) -> object:
         return _strip_slot_code(value)
 
-    def to_domain(self, household_schedule_id: StdUUID) -> HouseholdScheduleRule:
+    def to_domain(
+        self,
+        household_schedule_id: StdUUID,
+        schedule_mode: ScheduleMode = ScheduleMode.HEADCOUNT,
+    ) -> HouseholdScheduleRule:
+        computed_headcount = len(self.member_ids) if schedule_mode == ScheduleMode.MEMBERS else self.headcount
         return HouseholdScheduleRule(
             household_schedule_id=household_schedule_id,
             week_parity=self.week_parity,
             school_period_type=self.school_period_type,
             day_of_week=self.day_of_week,
             meal_slot_code=self.meal_slot_code,
-            headcount=self.headcount,
+            headcount=computed_headcount,
+            member_ids=self.member_ids if schedule_mode == ScheduleMode.MEMBERS else [],
         )
 
 
@@ -55,18 +63,21 @@ class HouseholdScheduleRuleSchema(BaseSchema):
     day_of_week: DayOfWeek
     meal_slot_code: SlotCode
     headcount: int
+    member_ids: list[StdUUID] = Field(default_factory=list)
 
 
 class HouseholdScheduleUpdateSchema(BaseModel):
     school_zone: SchoolZone | None = None
+    schedule_mode: ScheduleMode = ScheduleMode.HEADCOUNT
     rules: list[HouseholdScheduleRulePayload] = Field(default_factory=list)
 
     def to_domain(self) -> HouseholdSchedule:
-        return HouseholdSchedule(school_zone=self.school_zone)
+        return HouseholdSchedule(school_zone=self.school_zone, schedule_mode=self.schedule_mode)
 
 
 class HouseholdScheduleSchema(BaseSchema):
     school_zone: SchoolZone | None = None
+    schedule_mode: ScheduleMode = ScheduleMode.HEADCOUNT
     rules: list[HouseholdScheduleRuleSchema] = Field(default_factory=list)
 
 

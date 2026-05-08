@@ -89,7 +89,7 @@ class HouseholdScheduleRouter:
         try:
             schedule, rules = await self._service.update_household_schedule(
                 payload.to_domain(),
-                [rule.to_domain(existing.uuid) for rule in payload.rules],
+                [rule.to_domain(existing.uuid, payload.schedule_mode) for rule in payload.rules],
                 expected_version,
             )
         except (VersionConflict, InvalidMealPlanOperation) as exc:
