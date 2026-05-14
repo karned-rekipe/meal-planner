@@ -61,6 +61,7 @@ def test_patch_schema_accepts_custom_slot_code():
 
 
 def test_patch_schema_item_headcount():
+    member_id = "01951234-5678-7abc-def0-000000000001"
     s = MealPlanPatchSchema(
         operations=[
             SlotPatchOperationSchema(
@@ -73,12 +74,14 @@ def test_patch_schema_item_headcount():
                     "ingredient_quantity": 1,
                     "ingredient_unit": "x",
                     "headcount": 3,
+                    "member_ids": [member_id],
                 },
             )
         ]
     )
     assert s.operations[0].item is not None
     assert s.operations[0].item.headcount == 3
+    assert [str(member_uuid) for member_uuid in s.operations[0].item.member_ids] == [member_id]
 
 
 def test_patch_schema_empty_name_raises():

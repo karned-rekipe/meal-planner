@@ -47,7 +47,7 @@ from domain.ports.output.tenant_preferences_repository import TenantPreferencesR
 PERPETUAL_CALENDAR_KIND = "perpetual_calendar"
 PERPETUAL_CALENDAR_NAME = "Planning perpétuel"
 DEFAULT_CALENDAR_DAYS = 15
-SLOT_CREATING_OPERATIONS = {"set_headcount", "add_item"}
+SLOT_CREATING_OPERATIONS = {"set_headcount", "set_members", "add_item"}
 LEGACY_LUNCH_SLOT_CODES = {"1", "lunch", "midi", "dej", "dejeuner", "déjeuner"}
 LEGACY_DINNER_SLOT_CODES = {"3", "dinner", "soir", "diner", "dîner"}
 DAY_OF_WEEK_BY_INDEX: tuple[DayOfWeek, ...] = (
@@ -75,6 +75,7 @@ class MealItemInput(BaseModel):
     position: int | None = Field(None, ge=0)
     item_type: MealItemType
     headcount: int | None = Field(None, ge=1, le=99)
+    member_ids: list[UUID] = Field(default_factory=list)
     recipe_uuid: UUID | None = None
     recipe_snapshot: RecipeSnapshot | None = None
     ingredient_uuid: UUID | None = None
@@ -86,10 +87,11 @@ class MealItemInput(BaseModel):
 
 
 class SlotPatchOperation(BaseModel):
-    op: Literal["set_headcount", "add_item", "update_item", "remove_item", "reorder_items"]
+    op: Literal["set_headcount", "set_members", "add_item", "update_item", "remove_item", "reorder_items"]
     slot_date: date
     slot_code: SlotCode = Field(..., min_length=1, max_length=80)
     headcount: int | None = Field(None, ge=0, le=20)
+    member_ids: list[UUID] = Field(default_factory=list, max_length=20)
     item_uuid: UUID | None = None
     item: MealItemInput | None = None
     new_positions: dict[UUID, int] | None = None
@@ -703,6 +705,7 @@ class MealPlanService(BaseService[MealPlan]):
             if slot.headcount_source == HeadcountSource.HOUSEHOLD_SCHEDULE:
                 updates["headcount"] = None
                 updates["headcount_source"] = None
+                updates["member_ids"] = []
             elif has_manual_headcount and slot.headcount_source is None:
                 updates["headcount_source"] = HeadcountSource.MANUAL
             persisted.append(slot.model_copy(update=updates))
@@ -763,17 +766,20 @@ class MealPlanService(BaseService[MealPlan]):
                 slots.append(slot)
                 continue
             headcount = rule.headcount
+            member_ids: list[UUID] = []
             if schedule.schedule_mode == ScheduleMode.MEMBERS:
-                headcount = len([
+                member_ids = [
                     member_id
                     for member_id in rule.member_ids
                     if active_member_ids is None or member_id in active_member_ids
-                ])
+                ]
+                headcount = len(member_ids)
             slots.append(
                 slot.model_copy(
                     update={
                         "headcount": headcount,
                         "headcount_source": HeadcountSource.HOUSEHOLD_SCHEDULE,
+                        "member_ids": member_ids,
                     },
                 ),
             )
@@ -972,6 +978,7 @@ class MealPlanService(BaseService[MealPlan]):
             "position": target_position,
             "item_type": item.item_type,
             "headcount": item.headcount,
+            "member_ids": item.member_ids,
             "recipe_uuid": item.recipe_uuid,
             "recipe_snapshot": snapshot,
             "ingredient_uuid": item.ingredient_uuid,
@@ -1040,6 +1047,15 @@ class MealPlanService(BaseService[MealPlan]):
                 update={
                     "headcount": operation.headcount,
                     "headcount_source": HeadcountSource.MANUAL,
+                },
+            )
+        elif operation.op == "set_members":
+            member_ids = await self._validated_slot_member_ids(operation.member_ids)
+            slot = slot.model_copy(
+                update={
+                    "headcount": len(member_ids),
+                    "headcount_source": HeadcountSource.MANUAL,
+                    "member_ids": member_ids,
                 },
             )
         elif operation.op == "add_item":
@@ -1156,6 +1172,17 @@ class MealPlanService(BaseService[MealPlan]):
         if self._household_member_repo is None:
             return None
         return {member.uuid for member in await self._household_member_repo.list_all()}
+
+    async def _validated_slot_member_ids(self, member_ids: list[UUID]) -> list[UUID]:
+        deduped_member_ids = list(dict.fromkeys(member_ids))
+        active_member_ids = await self._active_household_member_ids()
+        if active_member_ids is None:
+            return deduped_member_ids
+
+        unknown_member_ids = [member_id for member_id in deduped_member_ids if member_id not in active_member_ids]
+        if unknown_member_ids:
+            raise InvalidMealPlanOperation("slot member_ids contain unknown household members")
+        return deduped_member_ids
 
     async def _normalize_household_schedule_rules(
         self,

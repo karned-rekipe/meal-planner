@@ -53,6 +53,7 @@ class MealItemPayload(BaseModel):
     position: int | None = Field(None, ge=0)
     item_type: MealItemType
     headcount: int | None = Field(None, ge=1, le=99)
+    member_ids: list[StdUUID] = Field(default_factory=list)
     recipe_uuid: StdUUID | None = None
     recipe_snapshot: RecipeSnapshot | None = None
     ingredient_uuid: StdUUID | None = None
@@ -73,6 +74,7 @@ class MealItemSchema(BaseModel):
     position: int
     item_type: MealItemType
     headcount: int | None = None
+    member_ids: list[StdUUID] = Field(default_factory=list)
     recipe_uuid: StdUUID | None = None
     recipe_snapshot: RecipeSnapshotSchema | None = None
     recipe_status: str | None = None
@@ -90,6 +92,7 @@ class MealSlotPayload(BaseModel):
     slot_code: SlotCode = Field(..., min_length=1, max_length=80)
     headcount: int | None = Field(None, ge=0, le=20)
     headcount_source: HeadcountSource | None = None
+    member_ids: list[StdUUID] = Field(default_factory=list)
     items: list[MealItemPayload] = Field(default_factory=list)
 
     @field_validator("slot_code", mode="before")
@@ -105,6 +108,7 @@ class MealSlotSchema(BaseModel):
     slot_code: SlotCode
     headcount: int | None = None
     headcount_source: HeadcountSource | None = None
+    member_ids: list[StdUUID] = Field(default_factory=list)
     items: list[MealItemSchema] = Field(default_factory=list)
 
 
@@ -136,6 +140,7 @@ class SlotPatchOperationSchema(BaseModel):
     slot_date: date
     slot_code: SlotCode = Field(..., min_length=1, max_length=80)
     headcount: int | None = Field(None, ge=0, le=20)
+    member_ids: list[StdUUID] = Field(default_factory=list, max_length=20)
     item_uuid: StdUUID | None = None
     item: MealItemPayload | None = None
     new_positions: dict[StdUUID, int] | None = None
@@ -238,6 +243,7 @@ def _slots_to_domain(payloads: list[MealSlotPayload]) -> list[MealSlot]:
             slot_code=payload.slot_code,
             headcount=payload.headcount,
             headcount_source=payload.headcount_source or (HeadcountSource.MANUAL if payload.headcount is not None else None),
+            member_ids=payload.member_ids,
             items=[_item_payload_to_domain(item) for item in payload.items],
         )
         for payload in payloads

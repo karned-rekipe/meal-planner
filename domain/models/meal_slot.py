@@ -1,4 +1,5 @@
 from datetime import date
+from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -11,6 +12,7 @@ class MealSlot(BaseModel):
     slot_code: SlotCode = Field(..., min_length=1, max_length=80)
     headcount: int | None = Field(None, ge=0, le=20)
     headcount_source: HeadcountSource | None = None
+    member_ids: list[UUID] = Field(default_factory=list)
     items: list[MealItem] = Field(default_factory=list)
 
     @field_validator("slot_code", mode="before")

@@ -11,6 +11,7 @@ class MealItem(BaseModel):
     position: int = Field(..., ge=0)
     item_type: MealItemType
     headcount: int | None = Field(None, ge=1, le=99)
+    member_ids: list[UUID] = Field(default_factory=list)
 
     recipe_uuid: UUID | None = None
     recipe_snapshot: RecipeSnapshot | None = None
