@@ -1,22 +1,20 @@
-"""Tests for adapters/input/fastapi/dependencies.py."""
-
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from fastapi import Request
-from fastapi.security import HTTPAuthorizationCredentials
 
 
-async def test_inject_tenant_uri_without_auth():
-    """Test inject_tenant_uri when no authentication is configured."""
+async def test_inject_tenant_uri_requires_tenant_or_auth_in_multitenant_mode():
     request = MagicMock(spec=Request)
     request.headers = {}
-    
-    # Import here to avoid config loading issues
-    from adapters.input.fastapi.dependencies import inject_tenant_uri
-    
-    # Should not raise
-    await inject_tenant_uri(request)
+
+    from adapters.input.fastapi.dependencies import _get_config, _get_inject_fn, inject_tenant_uri
+
+    _get_config.cache_clear()
+    _get_inject_fn.cache_clear()
+
+    with pytest.raises(RuntimeError, match="jwt_decoder requis"):
+        await inject_tenant_uri(request)
 
 
 async def test_inject_tenant_uri_is_cached():
@@ -48,8 +46,8 @@ def test_require_auth_fn_is_cached():
         mock_cfg.license = None
         mock_config.return_value = mock_cfg
         
-        # Clear cache first
-        from adapters.input.fastapi.dependencies import _get_require_auth_fn
+        from adapters.input.fastapi.dependencies import _get_config, _get_require_auth_fn
+        _get_config.cache_clear()
         _get_require_auth_fn.cache_clear()
         
         fn1 = _get_require_auth_fn()
@@ -88,11 +86,10 @@ def test_require_auth_raises_without_keycloak_config():
         mock_cfg.keycloak = None
         mock_config.return_value = mock_cfg
         
-        # Clear cache
-        from adapters.input.fastapi.dependencies import _get_require_auth_fn
+        from adapters.input.fastapi.dependencies import _get_config, _get_require_auth_fn
+        _get_config.cache_clear()
         _get_require_auth_fn.cache_clear()
         
         with pytest.raises(RuntimeError, match="config.keycloak requis"):
             _get_require_auth_fn()
-
 

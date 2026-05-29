@@ -1,4 +1,5 @@
 from adapters.input.fastapi.routers import AdminRouter, MealPlanRouter
+from adapters.input.fastapi.routers.tenant_planning_router import TenantPlanningRouter
 from arclith import Arclith
 from fastapi import FastAPI
 from infrastructure.containers.meal_plan_container import build_meal_plan_service
@@ -9,4 +10,5 @@ def register_routers(app: FastAPI, arclith: Arclith) -> None:
     service, logger = build_meal_plan_service(arclith)
     purge_registry.register("meal_plans", service.purge)
     app.include_router(MealPlanRouter(service, logger).router)
+    app.include_router(TenantPlanningRouter().router)
     app.include_router(AdminRouter(purge_registry).router)
