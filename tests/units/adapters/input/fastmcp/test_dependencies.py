@@ -89,11 +89,13 @@ def test_require_auth_mcp_raises_without_keycloak_config():
         mock_config.return_value = mock_cfg
         
         # Clear cache
-        from adapters.input.fastmcp.dependencies import _get_require_auth_mcp_fn
+        from adapters.input.fastmcp.dependencies import _get_config, _get_require_auth_mcp_fn
+        _get_config.cache_clear()
         _get_require_auth_mcp_fn.cache_clear()
         
         with pytest.raises(RuntimeError, match="config.keycloak requis"):
             _get_require_auth_mcp_fn()
+        _get_config.cache_clear()
 
 
 async def test_require_auth_mcp_with_license_validator():

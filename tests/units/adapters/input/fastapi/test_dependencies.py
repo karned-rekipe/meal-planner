@@ -7,14 +7,20 @@ from fastapi import Request
 async def test_inject_tenant_uri_requires_tenant_or_auth_in_multitenant_mode():
     request = MagicMock(spec=Request)
     request.headers = {}
+    config = MagicMock()
+    config.adapters.multitenant = True
 
     from adapters.input.fastapi.dependencies import _get_config, _get_inject_fn, inject_tenant_uri
 
-    _get_config.cache_clear()
-    _get_inject_fn.cache_clear()
+    with patch("adapters.input.fastapi.dependencies._get_config", return_value=config):
+        _get_inject_fn.cache_clear()
+        try:
+            with pytest.raises(RuntimeError, match="jwt_decoder requis"):
+                await inject_tenant_uri(request)
+        finally:
+            _get_inject_fn.cache_clear()
 
-    with pytest.raises(RuntimeError, match="jwt_decoder requis"):
-        await inject_tenant_uri(request)
+    _get_config.cache_clear()
 
 
 async def test_inject_tenant_uri_is_cached():
@@ -92,4 +98,5 @@ def test_require_auth_raises_without_keycloak_config():
         
         with pytest.raises(RuntimeError, match="config.keycloak requis"):
             _get_require_auth_fn()
+        _get_config.cache_clear()
 
