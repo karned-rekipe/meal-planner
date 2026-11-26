@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from datetime import datetime
 from uuid import UUID
 
@@ -22,8 +23,10 @@ class RecipeSnapshotIngredient(BaseModel):
             return []
         if isinstance(value, dict):
             months = [int(month) for month, score in value.items() if int(score) > 0]
+        elif isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
+            months = [int(month) for month in value]
         else:
-            months = [int(month) for month in value]  # type: ignore[union-attr]
+            raise ValueError("season_months must be a collection of months or a month-score mapping")
         if any(month < 1 or month > 12 for month in months):
             raise ValueError("season_months must contain values in [1..12]")
         return sorted(set(months))

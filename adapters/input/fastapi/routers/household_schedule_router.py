@@ -7,8 +7,11 @@ from uuid6 import UUID
 from adapters.input.fastapi.dependencies import inject_tenant_uri
 from adapters.input.fastapi.routers.meal_plan_router import MealPlanRouter
 from adapters.input.schemas.household_schedule_schema import (
+    HouseholdSchoolZoneUpdateSchema,
     HouseholdScheduleSchema,
     HouseholdScheduleUpdateSchema,
+    SchoolVacationCalendarSyncResultSchema,
+    SchoolVacationCalendarSyncSchema,
     SchoolVacationPeriodPayload,
     SchoolVacationPeriodSchema,
     household_schedule_to_schema,
@@ -16,7 +19,12 @@ from adapters.input.schemas.household_schedule_schema import (
 from application.services.meal_plan_service import MealPlanService
 from arclith.adapters.input.schemas.response_wrapper import ApiResponse, success_response
 from arclith.domain.ports.logger import Logger
-from domain.exceptions import InvalidMealPlanOperation, SchoolVacationPeriodNotFound, VersionConflict
+from domain.exceptions import (
+    InvalidMealPlanOperation,
+    SchoolVacationCalendarUnavailable,
+    SchoolVacationPeriodNotFound,
+    VersionConflict,
+)
 
 
 class HouseholdScheduleRouter:
@@ -31,6 +39,13 @@ class HouseholdScheduleRouter:
             "/v1/household-schedule/",
             self.get_household_schedule,
             methods=["GET"],
+            response_model=ApiResponse[HouseholdScheduleSchema],
+            status_code=200,
+        )
+        self.router.add_api_route(
+            "/v1/household-schedule/school-zone",
+            self.update_household_school_zone,
+            methods=["PUT"],
             response_model=ApiResponse[HouseholdScheduleSchema],
             status_code=200,
         )
@@ -54,6 +69,13 @@ class HouseholdScheduleRouter:
             methods=["POST"],
             response_model=ApiResponse[SchoolVacationPeriodSchema],
             status_code=201,
+        )
+        self.router.add_api_route(
+            "/v1/school-vacation-periods/sync-official",
+            self.sync_official_school_vacation_periods,
+            methods=["POST"],
+            response_model=ApiResponse[SchoolVacationCalendarSyncResultSchema],
+            status_code=200,
         )
         self.router.add_api_route(
             "/v1/school-vacation-periods/{uuid}",
@@ -89,11 +111,29 @@ class HouseholdScheduleRouter:
         try:
             schedule, rules = await self._service.update_household_schedule(
                 payload.to_domain(),
-                [rule.to_domain(existing.uuid, payload.schedule_mode) for rule in payload.rules],
+                [rule.to_domain(existing.uuid) for rule in payload.rules],
                 expected_version,
             )
         except (VersionConflict, InvalidMealPlanOperation) as exc:
             raise self._to_http_exception(exc) from exc
+        response.headers["ETag"] = MealPlanRouter._etag(schedule.version)
+        return success_response(household_schedule_to_schema(schedule, rules))
+
+    async def update_household_school_zone(
+        self,
+        payload: HouseholdSchoolZoneUpdateSchema,
+        response: Response,
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> ApiResponse[HouseholdScheduleSchema]:
+        expected_version = MealPlanRouter._parse_if_match(if_match)
+        try:
+            schedule = await self._service.update_household_school_zone(
+                payload.school_zone,
+                expected_version,
+            )
+        except VersionConflict as exc:
+            raise self._to_http_exception(exc) from exc
+        _, rules = await self._service.get_household_schedule()
         response.headers["ETag"] = MealPlanRouter._etag(schedule.version)
         return success_response(household_schedule_to_schema(schedule, rules))
 
@@ -112,6 +152,35 @@ class HouseholdScheduleRouter:
         result = await self._service.create_school_vacation_period(payload.to_domain())
         response.headers["ETag"] = MealPlanRouter._etag(result.version)
         return success_response(SchoolVacationPeriodSchema.model_validate(result, from_attributes=True))
+
+    async def sync_official_school_vacation_periods(
+        self,
+        payload: SchoolVacationCalendarSyncSchema,
+    ) -> ApiResponse[SchoolVacationCalendarSyncResultSchema]:
+        try:
+            zone, date_start, date_end, created, updated, deleted, periods = (
+                await self._service.sync_official_school_vacation_periods(
+                    payload.school_zone,
+                    payload.date_start,
+                    payload.date_end,
+                )
+            )
+        except (InvalidMealPlanOperation, SchoolVacationCalendarUnavailable) as exc:
+            raise self._to_http_exception(exc) from exc
+        return success_response(
+            SchoolVacationCalendarSyncResultSchema(
+                school_zone=zone,
+                date_start=date_start,
+                date_end=date_end,
+                created=created,
+                updated=updated,
+                deleted=deleted,
+                periods=[
+                    SchoolVacationPeriodSchema.model_validate(period, from_attributes=True)
+                    for period in periods
+                ],
+            )
+        )
 
     async def update_school_vacation_period(
         self,
@@ -151,4 +220,6 @@ class HouseholdScheduleRouter:
             return HTTPException(status_code=412, detail=str(exc))
         if isinstance(exc, InvalidMealPlanOperation):
             return HTTPException(status_code=422, detail=str(exc))
+        if isinstance(exc, SchoolVacationCalendarUnavailable):
+            return HTTPException(status_code=502, detail=str(exc))
         return HTTPException(status_code=500, detail="Unexpected household schedule error")

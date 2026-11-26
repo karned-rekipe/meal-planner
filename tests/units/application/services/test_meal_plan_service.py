@@ -16,16 +16,40 @@ from domain.models.enums import (
     MealItemType,
     SchoolPeriodType,
     SchoolZone,
-    ScheduleMode,
     VacationPeriodSource,
     WeekParity,
 )
-from domain.exceptions import InvalidMealPlanOperation
+from domain.exceptions import InvalidMealPlanOperation, SchoolVacationCalendarUnavailable
 from domain.models.household_member import HouseholdMember
 from domain.models.household_schedule import HouseholdSchedule, HouseholdScheduleRule
 from domain.models.recipe_snapshot import RecipeSnapshot
 from domain.models.school_vacation_period import SchoolVacationPeriod
 from tests.units.factories import meal_plan as build_meal_plan
+
+
+class FakeSchoolVacationCalendarClient:
+    async def fetch_periods(self, school_zone, date_start, date_end):
+        return [
+            SchoolVacationPeriod(
+                source=VacationPeriodSource.OFFICIAL,
+                school_zone=school_zone,
+                name="Vacances d'hiver",
+                start_date=date(2027, 2, 13),
+                end_date=date(2027, 2, 28),
+            ),
+            SchoolVacationPeriod(
+                source=VacationPeriodSource.OFFICIAL,
+                school_zone=school_zone,
+                name="Vacances de printemps",
+                start_date=date(2027, 4, 10),
+                end_date=date(2027, 4, 25),
+            ),
+        ]
+
+
+class EmptySchoolVacationCalendarClient:
+    async def fetch_periods(self, school_zone, date_start, date_end):
+        return []
 
 
 @pytest.fixture
@@ -90,6 +114,7 @@ def scheduled_service(repo, logger):
     return MealPlanService(
         repo,
         logger,
+        household_member_repository=InMemoryHouseholdMemberRepository(),
         household_schedule_repository=InMemoryHouseholdScheduleRepository(),
         school_vacation_period_repository=InMemorySchoolVacationPeriodRepository(),
     )
@@ -113,6 +138,16 @@ async def _configure_rule(
     school_period_type: SchoolPeriodType,
     headcount: int,
 ) -> None:
+    member_ids = []
+    for index in range(headcount):
+        member = await service.create_household_member(
+            HouseholdMember(
+                name=f"Personne {index + 1}",
+                member_type=MemberType.RESIDENT,
+                color="#2E8B57",
+            ),
+        )
+        member_ids.append(member.uuid)
     schedule, _ = await service.get_household_schedule()
     await service.update_household_schedule(
         HouseholdSchedule(school_zone=SchoolZone.A),
@@ -123,7 +158,8 @@ async def _configure_rule(
                 school_period_type=school_period_type,
                 day_of_week=DayOfWeek.MONDAY,
                 meal_slot_code="lunch",
-                headcount=headcount,
+                headcount=0,
+                member_ids=member_ids,
             )
         ],
         schedule.version,
@@ -266,7 +302,7 @@ async def test_calendar_projection_applies_household_schedule(scheduled_service)
     assert lunch.headcount_source == HeadcountSource.HOUSEHOLD_SCHEDULE
 
 
-async def test_members_schedule_projects_member_ids(scheduled_members_service):
+async def test_members_schedule_rejects_unknown_member_ids(scheduled_members_service):
     aubin = await scheduled_members_service.create_household_member(
         HouseholdMember(name="Aubin", member_type=MemberType.RESIDENT, color="#2E8B57"),
     )
@@ -275,28 +311,22 @@ async def test_members_schedule_projects_member_ids(scheduled_members_service):
     )
     inactive = uuid7()
     schedule, _ = await scheduled_members_service.get_household_schedule()
-    await scheduled_members_service.update_household_schedule(
-        HouseholdSchedule(school_zone=SchoolZone.A, schedule_mode=ScheduleMode.MEMBERS),
-        [
-            HouseholdScheduleRule(
-                household_schedule_id=schedule.uuid,
-                week_parity=WeekParity.EVEN,
-                school_period_type=SchoolPeriodType.REGULAR,
-                day_of_week=DayOfWeek.MONDAY,
-                meal_slot_code="lunch",
-                headcount=9,
-                member_ids=[aubin.uuid, inactive, aurelie.uuid],
-            )
-        ],
-        schedule.version,
-    )
-
-    plan = await scheduled_members_service.get_calendar(date(2026, 1, 5), date(2026, 1, 5))
-    lunch = next(slot for slot in plan.slots if slot.slot_code == "lunch")
-
-    assert lunch.headcount == 2
-    assert lunch.headcount_source == HeadcountSource.HOUSEHOLD_SCHEDULE
-    assert lunch.member_ids == [aubin.uuid, aurelie.uuid]
+    with pytest.raises(InvalidMealPlanOperation):
+        await scheduled_members_service.update_household_schedule(
+            HouseholdSchedule(school_zone=SchoolZone.A),
+            [
+                HouseholdScheduleRule(
+                    household_schedule_id=schedule.uuid,
+                    week_parity=WeekParity.EVEN,
+                    school_period_type=SchoolPeriodType.REGULAR,
+                    day_of_week=DayOfWeek.MONDAY,
+                    meal_slot_code="lunch",
+                    headcount=9,
+                    member_ids=[aubin.uuid, inactive, aurelie.uuid],
+                )
+            ],
+            schedule.version,
+        )
 
 
 async def test_calendar_patch_persists_only_user_calendar_overrides(scheduled_service, repo):
@@ -433,3 +463,71 @@ async def test_duplicate_household_schedule_rule_is_rejected(scheduled_service):
             [rule, rule.model_copy()],
             schedule.version,
         )
+
+
+async def test_official_school_vacation_sync_is_idempotent_and_preserves_manual_periods(repo, logger):
+    service = MealPlanService(
+        repo,
+        logger,
+        household_schedule_repository=InMemoryHouseholdScheduleRepository(),
+        school_vacation_period_repository=InMemorySchoolVacationPeriodRepository(),
+        school_vacation_calendar_client=FakeSchoolVacationCalendarClient(),
+    )
+    schedule, _ = await service.get_household_schedule()
+    await service.update_household_school_zone(SchoolZone.A, schedule.version)
+    manual = await service.create_school_vacation_period(
+        SchoolVacationPeriod(
+            source=VacationPeriodSource.MANUAL,
+            name="Congé familial",
+            start_date=date(2027, 5, 1),
+            end_date=date(2027, 5, 3),
+        ),
+    )
+
+    first = await service.sync_official_school_vacation_periods(
+        date_start=date(2027, 1, 1),
+        date_end=date(2027, 12, 31),
+    )
+    second = await service.sync_official_school_vacation_periods(
+        date_start=date(2027, 1, 1),
+        date_end=date(2027, 12, 31),
+    )
+
+    assert first[0] == SchoolZone.A
+    assert first[3:6] == (2, 0, 0)
+    assert second[3:6] == (0, 0, 0)
+    assert {period.name for period in await service.list_school_vacation_periods()} == {
+        "Vacances d'hiver",
+        "Vacances de printemps",
+        manual.name,
+    }
+
+
+async def test_official_school_vacation_sync_preserves_existing_periods_when_source_is_empty(repo, logger):
+    period_repo = InMemorySchoolVacationPeriodRepository()
+    service = MealPlanService(
+        repo,
+        logger,
+        household_schedule_repository=InMemoryHouseholdScheduleRepository(),
+        school_vacation_period_repository=period_repo,
+        school_vacation_calendar_client=EmptySchoolVacationCalendarClient(),
+    )
+    schedule, _ = await service.get_household_schedule()
+    await service.update_household_school_zone(SchoolZone.A, schedule.version)
+    existing = await period_repo.create(
+        SchoolVacationPeriod(
+            source=VacationPeriodSource.OFFICIAL,
+            school_zone=SchoolZone.A,
+            name="Vacances existantes",
+            start_date=date(2027, 2, 1),
+            end_date=date(2027, 2, 10),
+        ),
+    )
+
+    with pytest.raises(SchoolVacationCalendarUnavailable):
+        await service.sync_official_school_vacation_periods(
+            date_start=date(2027, 1, 1),
+            date_end=date(2027, 12, 31),
+        )
+
+    assert [period.uuid for period in await period_repo.find_all()] == [existing.uuid]

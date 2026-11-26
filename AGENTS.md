@@ -14,7 +14,10 @@ Pour le contexte global du projet et les conventions transverses, voir `../AGENT
 - les plans de repas (`MealPlan`) et leurs slots (`MealSlot`) ;
 - les éléments planifiés dans un slot (`MealItem`) ;
 - les snapshots de recettes et d'ingrédients (`RecipeSnapshot`, `IngredientSnapshot`) — figés au moment de la planification, pour que la modification ultérieure d'une recette ne casse pas un plan déjà établi ;
-- les préférences par tenant (`TenantPreferences`) — exclusions, contraintes, headcount par défaut.
+- les préférences par tenant (`TenantPreferences`) — exclusions et contraintes alimentaires ;
+- les personnes nommées du foyer, leur présence aux repas, la zone scolaire et les périodes de vacances.
+
+La planification active fonctionne uniquement avec des **personnes nommées**. Chaque règle de présence doit contenir au moins un `member_id` connu. Le mode numérique historique `headcount` peut encore être lu en stockage pour assurer la compatibilité, mais il ne fait plus partie du contrat REST/MCP public.
 
 Le service **consomme** `recipe/` via HTTP (adapter `adapters/output/http`) pour récupérer les recettes éligibles (filtre `meal_planner_eligible=true`). Il **expose** ses entités via REST + MCP au frontend `gwel` et à l'agent `meal-planner-agent`.
 
@@ -33,7 +36,7 @@ Le service **consomme** `recipe/` via HTTP (adapter `adapters/output/http`) pour
 | REST | `8010` |
 | MCP HTTP | `8011` |
 | Probes (health/ready/metrics) | `9010` |
-| Source de données externe | `recipe/` (REST `8301` via pont) |
+| Sources de données externes | `recipe/` (REST `8301` via pont), calendrier scolaire officiel de l'Éducation nationale (HTTPS) |
 
 **Ne jamais changer ces ports** sans mettre à jour `start_services.sh`, `gwel/vite.config.ts`, et `meal-planner-agent/config.yaml`.
 
@@ -97,6 +100,8 @@ main.py                                # Entry point unique (MODE env var)
 ### Règles spécifiques à ce repo
 
 - **Snapshots vs. références** : un `MealItem` contient un `RecipeSnapshot` figé (titre, UUID, ingrédients essentiels au moment T). Cela protège le plan d'une mutation ultérieure de la recette. Ne pas remplacer par une simple référence UUID.
+- **Présences nommées** : ne pas réintroduire de mode de configuration anonyme. Une règle de présence publique contient des `member_ids`; le `headcount` est calculé à partir de cette liste.
+- **Vacances officielles** : la synchronisation est idempotente, limitée à la zone et à la plage demandées, et ne supprime jamais les périodes manuelles. Une réponse officielle vide est une erreur et ne doit provoquer aucune suppression.
 - **Tout nouveau tool MCP** doit être enregistré dans `adapters/input/fastmcp/register.py`.
 - **Toute nouvelle route REST** doit être enregistrée dans `adapters/input/fastapi/register.py`.
 - **Couverture de tests ≥ 80 %** : `make coverage`.
@@ -150,6 +155,7 @@ Pour ajouter une fonctionnalité, lire en plus :
 - `docs/new-entity.md`
 - `docs/http-conventions.md`
 - `docs/implementation.md`
+- `docs/planning-configuration.md`
 - `docs/vault.md`
 
 ## 7. Règle du journal — rappel
