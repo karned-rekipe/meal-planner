@@ -48,7 +48,10 @@ def _get_header_tenant_resolver():
 
 def _extract_headers(ctx: fastmcp.Context) -> dict[str, str]:
     try:
-        request = ctx.request_context.request
+        request_context = ctx.request_context
+        if request_context is None:
+            return {}
+        request = request_context.request
         if request is None:
             return {}
         return dict(request.headers)

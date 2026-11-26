@@ -4,6 +4,7 @@ from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
+from uuid6 import UUID as UUID7
 
 from arclith import BaseService, Logger
 from domain.exceptions import (
@@ -62,6 +63,10 @@ DAY_OF_WEEK_BY_INDEX: tuple[DayOfWeek, ...] = (
     DayOfWeek.SATURDAY,
     DayOfWeek.SUNDAY,
 )
+
+
+def _repository_uuid(value: UUID) -> UUID7:
+    return UUID7(str(value))
 
 
 def _strip_slot_code(value: object) -> object:
@@ -152,7 +157,7 @@ class MealPlanService(BaseService[MealPlan]):
         return created
 
     async def read(self, uuid: UUID) -> MealPlan | None:
-        plan = await super().read(uuid)
+        plan = await super().read(_repository_uuid(uuid))
         if plan is None:
             return None
         return await self._enrich_recipe_status(plan)
@@ -248,7 +253,7 @@ class MealPlanService(BaseService[MealPlan]):
         self._assert_version(existing, expected_version)
         if existing.status not in (MealPlanStatus.DRAFT, MealPlanStatus.ABANDONED):
             raise InvalidMealPlanOperation("Only draft or abandoned meal plans can be deleted")
-        await self._meal_plan_repo.delete(uuid)
+        await self._meal_plan_repo.delete(_repository_uuid(uuid))
 
     async def delete(self, uuid: UUID, deleted_by: str | None = None) -> None:
         existing = await self._get_existing(uuid)
@@ -548,7 +553,7 @@ class MealPlanService(BaseService[MealPlan]):
         self._assert_version(existing, expected_version)
         if self._school_vacation_period_repo is None:
             return
-        await self._school_vacation_period_repo.delete(uuid)
+        await self._school_vacation_period_repo.delete(_repository_uuid(uuid))
 
     async def sync_official_school_vacation_periods(
         self,
@@ -1158,7 +1163,7 @@ class MealPlanService(BaseService[MealPlan]):
         }
         if item.uuid is not None:
             payload["uuid"] = item.uuid
-        return MealItem(**payload)
+        return MealItem.model_validate(payload)
 
     @staticmethod
     def _item_headcount(item: MealItem, slot_headcount: int | None, fallback: int) -> int:
@@ -1274,14 +1279,15 @@ class MealPlanService(BaseService[MealPlan]):
         )
 
     async def _enrich_recipe_status(self, plan: MealPlan) -> MealPlan:
-        if self._recipe_client is None:
+        recipe_client = self._recipe_client
+        if recipe_client is None:
             return plan
         status_tasks: dict[UUID, asyncio.Task[dict[str, str | int | None]]] = {}
 
         async def status_for(recipe_uuid: UUID) -> dict[str, str | int | None]:
             task = status_tasks.get(recipe_uuid)
             if task is None:
-                task = asyncio.create_task(self._recipe_client.get_recipe_status(recipe_uuid))
+                task = asyncio.create_task(recipe_client.get_recipe_status(recipe_uuid))
                 status_tasks[recipe_uuid] = task
             return await task
 
@@ -1315,7 +1321,7 @@ class MealPlanService(BaseService[MealPlan]):
         return plan.model_copy(update={"slots": slots})
 
     async def _get_existing(self, uuid: UUID) -> MealPlan:
-        existing = await super().read(uuid)
+        existing = await super().read(_repository_uuid(uuid))
         if existing is None:
             raise MealPlanNotFound(f"MealPlan {uuid} not found")
         return existing
@@ -1323,7 +1329,7 @@ class MealPlanService(BaseService[MealPlan]):
     async def _get_existing_school_vacation_period(self, uuid: UUID) -> SchoolVacationPeriod:
         if self._school_vacation_period_repo is None:
             raise SchoolVacationPeriodNotFound(f"SchoolVacationPeriod {uuid} not found")
-        existing = await self._school_vacation_period_repo.read(uuid)
+        existing = await self._school_vacation_period_repo.read(_repository_uuid(uuid))
         if existing is None:
             raise SchoolVacationPeriodNotFound(f"SchoolVacationPeriod {uuid} not found")
         return existing

@@ -1,6 +1,8 @@
 import pytest
 from domain.models.meal_slot import MealSlot
+from domain.models.recipe_snapshot import RecipeSnapshotIngredient
 from tests.units.factories import DEFAULT_DATE_START, meal_plan
+from uuid6 import uuid7
 
 
 def test_valid_meal_plan():
@@ -58,3 +60,14 @@ def test_meal_slot_headcount_allows_zero():
 def test_meal_slot_headcount_rejects_more_than_twenty():
     with pytest.raises(Exception):
         MealSlot(date=DEFAULT_DATE_START, slot_code="lunch", headcount=21)
+
+
+def test_recipe_snapshot_ingredient_rejects_non_collection_season_months():
+    with pytest.raises(ValueError, match="collection of months"):
+        RecipeSnapshotIngredient(
+            ingredient_uuid=uuid7(),
+            name="Carotte",
+            quantity=1,
+            unit="pièce",
+            season_months=3,
+        )

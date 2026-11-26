@@ -10,7 +10,7 @@ class MealItem(BaseModel):
     uuid: UUID = Field(default_factory=uuid4)
     position: int = Field(..., ge=0)
     item_type: MealItemType
-    headcount: int | None = Field(None, ge=1, le=99)
+    headcount: int | None = Field(default=None, ge=1, le=99)
     member_ids: list[UUID] = Field(default_factory=list)
 
     recipe_uuid: UUID | None = None
@@ -20,10 +20,10 @@ class MealItem(BaseModel):
 
     ingredient_uuid: UUID | None = None
     ingredient_name: str | None = None
-    ingredient_quantity: float | None = Field(None, ge=0)
+    ingredient_quantity: float | None = Field(default=None, ge=0)
     ingredient_unit: str | None = None
 
-    note: str | None = Field(None, max_length=500)
+    note: str | None = Field(default=None, max_length=500)
     legacy_id: int | None = None
 
     @model_validator(mode="after")
