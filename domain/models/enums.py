@@ -19,6 +19,13 @@ class MealItemType(StrEnum):
     MIXED = "mixed"
 
 
+class PreparationTimerStatus(StrEnum):
+    RUNNING = "running"
+    PAUSED = "paused"
+    RINGING = "ringing"
+    COMPLETED = "completed"
+
+
 class HeadcountSource(StrEnum):
     HOUSEHOLD_SCHEDULE = "household_schedule"
     MANUAL = "manual"

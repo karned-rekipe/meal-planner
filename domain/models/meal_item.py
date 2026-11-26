@@ -3,6 +3,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field, model_validator
 
 from domain.models.enums import MealItemType
+from domain.models.recipe_preparation import RecipePreparationProgress
 from domain.models.recipe_snapshot import RecipeSnapshot
 
 
@@ -17,6 +18,7 @@ class MealItem(BaseModel):
     recipe_snapshot: RecipeSnapshot | None = None
     recipe_status: str | None = None
     recipe_modified: bool = False
+    preparation_progress: RecipePreparationProgress | None = None
 
     ingredient_uuid: UUID | None = None
     ingredient_name: str | None = None
@@ -31,7 +33,9 @@ class MealItem(BaseModel):
         if self.item_type == MealItemType.RECIPE:
             if self.recipe_uuid is None or self.recipe_snapshot is None:
                 raise ValueError("recipe item requires recipe_uuid and recipe_snapshot")
-        elif self.item_type == MealItemType.INGREDIENT:
+        elif self.preparation_progress is not None:
+            raise ValueError("preparation_progress is only available for recipe items")
+        if self.item_type == MealItemType.INGREDIENT:
             if self.ingredient_uuid is None or self.ingredient_quantity is None or not self.ingredient_unit:
                 raise ValueError("ingredient item requires ingredient_uuid, quantity and unit")
         elif self.item_type in (MealItemType.NOTE, MealItemType.PREP_TASK):
