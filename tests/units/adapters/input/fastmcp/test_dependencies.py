@@ -1,7 +1,7 @@
 """Tests for adapters/input/fastmcp/dependencies.py."""
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import fastmcp
 
@@ -14,7 +14,9 @@ async def test_inject_tenant_uri_with_none_context():
     await inject_tenant_uri(None)
 
 
-async def test_inject_tenant_uri_requires_tenant_or_auth_in_multitenant_mode():
+async def test_inject_tenant_uri_requires_tenant_or_auth_in_multitenant_mode(monkeypatch):
+    monkeypatch.delenv("REKIPE_AUTH_DISABLED", raising=False)
+    monkeypatch.delenv("REKIPE_TENANT_URI", raising=False)
     config = MagicMock()
     config.adapters.multitenant = True
     from adapters.input.fastmcp.dependencies import _get_config, _get_inject_fn, inject_tenant_uri
@@ -30,6 +32,30 @@ async def test_inject_tenant_uri_requires_tenant_or_auth_in_multitenant_mode():
             _get_inject_fn.cache_clear()
 
     _get_config.cache_clear()
+
+
+async def test_inject_tenant_uri_uses_local_tenant_when_auth_disabled(monkeypatch):
+    from adapters.input.fastmcp.dependencies import inject_tenant_uri
+
+    monkeypatch.setenv("REKIPE_AUTH_DISABLED", "true")
+    monkeypatch.setenv("REKIPE_TENANT_URI", "foyer-demo")
+
+    ctx = MagicMock(spec=fastmcp.Context)
+    config = MagicMock()
+    config.adapters.multitenant = True
+    resolver = MagicMock()
+    tenant_context = MagicMock()
+    resolver.resolve = AsyncMock(return_value=tenant_context)
+
+    with (
+        patch("adapters.input.fastmcp.dependencies._get_config", return_value=config),
+        patch("adapters.input.fastmcp.dependencies._get_header_tenant_resolver", return_value=resolver),
+        patch("arclith.adapters.context.set_tenant_context") as set_tenant_context,
+    ):
+        await inject_tenant_uri(ctx)
+
+    resolver.resolve.assert_awaited_once_with("foyer-demo")
+    set_tenant_context.assert_called_once_with(tenant_context)
 
 
 def test_inject_fn_is_cached():
@@ -71,12 +97,23 @@ def test_require_auth_mcp_fn_is_cached():
         assert fn1 is fn2
 
 
-async def test_require_auth_mcp_with_none_context_raises():
+async def test_require_auth_mcp_with_none_context_raises(monkeypatch):
     """Test require_auth_mcp raises when context is None."""
     from adapters.input.fastmcp.dependencies import require_auth_mcp
-    
+
+    monkeypatch.delenv("REKIPE_AUTH_DISABLED", raising=False)
     with pytest.raises(PermissionError, match="401: Authentification requise"):
         await require_auth_mcp(None)
+
+
+async def test_require_auth_mcp_allows_local_auth_disabled_mode(monkeypatch):
+    from adapters.input.fastmcp.dependencies import require_auth_mcp
+
+    monkeypatch.setenv("REKIPE_AUTH_DISABLED", "true")
+
+    claims = await require_auth_mcp(None)
+
+    assert claims == {"sub": "local-dev", "auth_disabled": True}
 
 
 async def test_require_auth_mcp_with_valid_context():
@@ -134,4 +171,3 @@ async def test_require_auth_mcp_with_license_validator():
         # Should not raise during function creation
         fn = _get_require_auth_mcp_fn()
         assert callable(fn)
-

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import cache
+import os
 from pathlib import Path
 from typing import Callable
 
@@ -10,6 +11,11 @@ from arclith.adapters.input.fastmcp.dependencies import make_inject_tenant_uri
 from arclith.infrastructure.config import load_config_dir
 
 _CONFIG_PATH = Path(__file__).parent.parent.parent.parent / "config"
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
+def _is_auth_disabled() -> bool:
+    return os.getenv("REKIPE_AUTH_DISABLED", "").strip().lower() in _TRUE_VALUES
 
 
 @cache
@@ -50,9 +56,15 @@ def _extract_headers(ctx: fastmcp.Context) -> dict[str, str]:
         return {}
 
 
+async def _inject_from_tenant_id(tenant_id: str) -> None:
+    from arclith.adapters.context import set_tenant_context
+
+    set_tenant_context(await _get_header_tenant_resolver().resolve(tenant_id))
+
+
 async def _inject_from_tenant_header(ctx: fastmcp.Context) -> bool:
     config = _get_config()
-    if not config.adapters.multitenant:
+    if not config.adapters.multitenant or not _is_auth_disabled():
         return False
 
     headers = _extract_headers(ctx)
@@ -60,15 +72,28 @@ async def _inject_from_tenant_header(ctx: fastmcp.Context) -> bool:
     if not tenant_id:
         return False
 
-    from arclith.adapters.context import set_tenant_context
+    await _inject_from_tenant_id(tenant_id)
+    return True
 
-    set_tenant_context(await _get_header_tenant_resolver().resolve(tenant_id))
+
+async def _inject_from_local_tenant() -> bool:
+    config = _get_config()
+    if not config.adapters.multitenant or not _is_auth_disabled():
+        return False
+
+    tenant_id = os.getenv("REKIPE_TENANT_URI")
+    if not tenant_id:
+        return False
+
+    await _inject_from_tenant_id(tenant_id)
     return True
 
 
 async def inject_tenant_uri(ctx: fastmcp.Context | None) -> None:
     if ctx is not None:
         if await _inject_from_tenant_header(ctx):
+            return
+        if await _inject_from_local_tenant():
             return
         await _get_inject_fn()(ctx)
 
@@ -95,6 +120,8 @@ def _get_require_auth_mcp_fn() -> Callable:
 
 
 async def require_auth_mcp(ctx: fastmcp.Context | None) -> dict:
+    if _is_auth_disabled():
+        return {"sub": "local-dev", "auth_disabled": True}
     if ctx is None:
         raise PermissionError("401: Authentification requise (transport stdio non supporté)")
     return await _get_require_auth_mcp_fn()(ctx)
