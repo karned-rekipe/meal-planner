@@ -25,6 +25,7 @@ COPY --chown=app:app domain/         domain/
 COPY --chown=app:app application/    application/
 COPY --chown=app:app adapters/       adapters/
 COPY --chown=app:app infrastructure/ infrastructure/
+COPY --chown=app:app config/         config/
 COPY --chown=app:app main.py __init__.py ./
 
 ENV PATH="/app/.venv/bin:$PATH" \
