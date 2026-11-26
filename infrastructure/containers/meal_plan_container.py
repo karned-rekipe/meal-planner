@@ -18,6 +18,7 @@ from domain.ports.output.household_member_repository import HouseholdMemberRepos
 from domain.ports.output.household_schedule_repository import HouseholdScheduleRepository
 from domain.ports.output.meal_plan_repository import MealPlanRepository
 from domain.ports.output.recipe_client import RecipeClient
+from domain.ports.output.school_vacation_calendar_client import SchoolVacationCalendarClient
 from domain.ports.output.school_vacation_period_repository import SchoolVacationPeriodRepository
 from domain.ports.output.tenant_preferences_repository import TenantPreferencesRepository
 
@@ -189,6 +190,19 @@ def _build_recipe_client() -> RecipeClient:
     )
 
 
+def _build_school_vacation_calendar_client() -> SchoolVacationCalendarClient:
+    from adapters.output.http.school_vacation_calendar_client import (
+        DEFAULT_CALENDAR_API_URL,
+        DEFAULT_CALENDAR_DATASET,
+        OfficialSchoolVacationCalendarClient,
+    )
+
+    return OfficialSchoolVacationCalendarClient(
+        base_url=os.getenv("SCHOOL_VACATION_CALENDAR_API_URL", DEFAULT_CALENDAR_API_URL),
+        dataset=os.getenv("SCHOOL_VACATION_CALENDAR_DATASET", DEFAULT_CALENDAR_DATASET),
+    )
+
+
 def build_meal_plan_service(arclith: Arclith) -> tuple[MealPlanService, Logger]:
     arclith.logger.info("🗄️ Repository adapter selected", adapter=arclith.config.adapters.repository)
     repo: MealPlanRepository = cast(MealPlanRepository, _registry.build(arclith.config, arclith.logger))
@@ -221,6 +235,7 @@ def build_meal_plan_service(arclith: Arclith) -> tuple[MealPlanService, Logger]:
             household_schedule_repository=household_schedule_repo,
             household_member_repository=household_member_repo,
             school_vacation_period_repository=school_vacation_period_repo,
+            school_vacation_calendar_client=_build_school_vacation_calendar_client(),
         ),
         arclith.logger,
     )

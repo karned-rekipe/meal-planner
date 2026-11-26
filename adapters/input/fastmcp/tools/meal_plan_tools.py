@@ -17,10 +17,18 @@ from adapters.input.schemas.meal_plan_schema import (
     meal_plan_update_payload_to_domain,
 )
 from adapters.input.schemas.household_schedule_schema import (
+    HouseholdSchoolZoneUpdateSchema,
     HouseholdScheduleUpdateSchema,
+    SchoolVacationCalendarSyncResultSchema,
+    SchoolVacationCalendarSyncSchema,
     SchoolVacationPeriodPayload,
     SchoolVacationPeriodSchema,
     household_schedule_to_schema,
+)
+from adapters.input.schemas.household_member_schema import (
+    HouseholdMemberAvatarPayload,
+    HouseholdMemberPayload,
+    HouseholdMemberSchema,
 )
 from adapters.input.schemas.tenant_preferences_schema import (
     TenantPreferencesSchema,
@@ -200,7 +208,7 @@ class MealPlanMCP:
 
         @self._mcp.tool
         async def get_household_schedule(ctx: fastmcp.Context | None = None) -> dict:
-            """Read the tenant household headcount schedule and all configured rules."""
+            """Read the named household attendance schedule and all configured rules."""
             await inject_tenant_uri(ctx)
             schedule, rules = await service.get_household_schedule()
             return household_schedule_to_schema(schedule, rules).model_dump(mode="json")
@@ -211,16 +219,95 @@ class MealPlanMCP:
             payload: HouseholdScheduleUpdateSchema,
             ctx: fastmcp.Context | None = None,
         ) -> dict:
-            """Replace the tenant household headcount schedule rules."""
+            """Replace named household attendance rules. Every rule must identify present people."""
             await require_auth_mcp(ctx)
             await inject_tenant_uri(ctx)
             existing, _ = await service.get_household_schedule()
             schedule, rules = await service.update_household_schedule(
                 payload.to_domain(),
-                [rule.to_domain(existing.uuid, payload.schedule_mode) for rule in payload.rules],
+                [rule.to_domain(existing.uuid) for rule in payload.rules],
                 expected_version,
             )
             return household_schedule_to_schema(schedule, rules).model_dump(mode="json")
+
+        @self._mcp.tool
+        async def set_household_school_zone(
+            expected_version: int,
+            payload: HouseholdSchoolZoneUpdateSchema,
+            ctx: fastmcp.Context | None = None,
+        ) -> dict:
+            """Set the French school vacation zone without replacing attendance rules."""
+            await require_auth_mcp(ctx)
+            await inject_tenant_uri(ctx)
+            schedule = await service.update_household_school_zone(payload.school_zone, expected_version)
+            _, rules = await service.get_household_schedule()
+            return household_schedule_to_schema(schedule, rules).model_dump(mode="json")
+
+        @self._mcp.tool
+        async def list_household_members(ctx: fastmcp.Context | None = None) -> list[dict]:
+            """List all named people available for meal planning."""
+            await inject_tenant_uri(ctx)
+            return [
+                HouseholdMemberSchema.model_validate(member, from_attributes=True).model_dump(mode="json")
+                for member in await service.list_household_members()
+            ]
+
+        @self._mcp.tool
+        async def create_household_member(
+            payload: HouseholdMemberPayload,
+            ctx: fastmcp.Context | None = None,
+        ) -> dict:
+            """Create a named household member or recurring guest."""
+            await require_auth_mcp(ctx)
+            await inject_tenant_uri(ctx)
+            result = await service.create_household_member(payload.to_domain())
+            return HouseholdMemberSchema.model_validate(result, from_attributes=True).model_dump(mode="json")
+
+        @self._mcp.tool
+        async def update_household_member(
+            uuid: str,
+            expected_version: int,
+            payload: HouseholdMemberPayload,
+            ctx: fastmcp.Context | None = None,
+        ) -> dict:
+            """Update a named household member with optimistic locking."""
+            await require_auth_mcp(ctx)
+            await inject_tenant_uri(ctx)
+            result = await service.update_household_member(
+                to_uuid6(StdUUID(uuid)),
+                payload.to_domain(),
+                expected_version,
+            )
+            return HouseholdMemberSchema.model_validate(result, from_attributes=True).model_dump(mode="json")
+
+        @self._mcp.tool
+        async def update_household_member_avatar(
+            uuid: str,
+            expected_version: int,
+            payload: HouseholdMemberAvatarPayload,
+            ctx: fastmcp.Context | None = None,
+        ) -> dict:
+            """Update the avatar data URI for a named household member."""
+            await require_auth_mcp(ctx)
+            await inject_tenant_uri(ctx)
+            result = await service.update_household_member_avatar(
+                to_uuid6(StdUUID(uuid)),
+                payload.avatar_data,
+                expected_version,
+            )
+            return HouseholdMemberSchema.model_validate(result, from_attributes=True).model_dump(mode="json")
+
+        @self._mcp.tool
+        async def delete_household_member(
+            uuid: str,
+            expected_version: int,
+            ctx: fastmcp.Context | None = None,
+        ) -> dict:
+            """Delete a named household member."""
+            await require_auth_mcp(ctx)
+            await inject_tenant_uri(ctx)
+            await service.delete_household_member(to_uuid6(StdUUID(uuid)), expected_version)
+            return {"deleted": True}
 
         @self._mcp.tool
         async def list_school_vacation_periods(ctx: fastmcp.Context | None = None) -> list[dict]:
@@ -241,6 +328,34 @@ class MealPlanMCP:
             await inject_tenant_uri(ctx)
             result = await service.create_school_vacation_period(payload.to_domain())
             return SchoolVacationPeriodSchema.model_validate(result, from_attributes=True).model_dump(mode="json")
+
+        @self._mcp.tool
+        async def sync_official_school_vacation_periods(
+            payload: SchoolVacationCalendarSyncSchema,
+            ctx: fastmcp.Context | None = None,
+        ) -> dict:
+            """Fetch and idempotently synchronize the official French school vacation calendar."""
+            await require_auth_mcp(ctx)
+            await inject_tenant_uri(ctx)
+            zone, date_start, date_end, created, updated, deleted, periods = (
+                await service.sync_official_school_vacation_periods(
+                    payload.school_zone,
+                    payload.date_start,
+                    payload.date_end,
+                )
+            )
+            return SchoolVacationCalendarSyncResultSchema(
+                school_zone=zone,
+                date_start=date_start,
+                date_end=date_end,
+                created=created,
+                updated=updated,
+                deleted=deleted,
+                periods=[
+                    SchoolVacationPeriodSchema.model_validate(period, from_attributes=True)
+                    for period in periods
+                ],
+            ).model_dump(mode="json")
 
         @self._mcp.tool
         async def update_school_vacation_period(

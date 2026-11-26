@@ -8,7 +8,7 @@ from domain.models.enums import DayOfWeek, ScheduleMode, SchoolPeriodType, Schoo
 
 class HouseholdSchedule(Entity):
     school_zone: SchoolZone | None = None
-    schedule_mode: ScheduleMode = ScheduleMode.HEADCOUNT
+    schedule_mode: ScheduleMode = ScheduleMode.MEMBERS
 
 
 class HouseholdScheduleRule(Entity):

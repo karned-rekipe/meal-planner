@@ -6,14 +6,23 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from adapters.input.fastapi.dependencies import inject_tenant_uri, require_auth
-from adapters.input.fastapi.routers import AdminRouter, HouseholdScheduleRouter, MealPlanRouter, TenantPreferencesRouter
+from adapters.input.fastapi.routers import (
+    AdminRouter,
+    HouseholdMemberRouter,
+    HouseholdScheduleRouter,
+    MealPlanRouter,
+    TenantPreferencesRouter,
+)
 from adapters.output.memory.repository import (
+    InMemoryHouseholdMemberRepository,
     InMemoryHouseholdScheduleRepository,
     InMemorySchoolVacationPeriodRepository,
     InMemoryTenantPreferencesRepository,
 )
 from adapters.output.http.static_recipe_client import StaticRecipeClient
 from application.services.meal_plan_service import MealPlanService
+from domain.models.enums import VacationPeriodSource
+from domain.models.school_vacation_period import SchoolVacationPeriod
 from infrastructure.purge_registry import PurgeRegistry
 from tests.units.factories import DEFAULT_DATE_END, DEFAULT_DATE_START, meal_plan_payload
 
@@ -21,6 +30,19 @@ from tests.units.factories import DEFAULT_DATE_END, DEFAULT_DATE_START, meal_pla
 def _payload(**kwargs) -> dict:
     name = kwargs.pop("name", "Semaine test")
     return meal_plan_payload(name, **kwargs)
+
+
+class FakeSchoolVacationCalendarClient:
+    async def fetch_periods(self, school_zone, date_start, date_end):
+        return [
+            SchoolVacationPeriod(
+                source=VacationPeriodSource.OFFICIAL,
+                school_zone=school_zone,
+                name="Vacances officielles",
+                start_date=date(2027, 2, 13),
+                end_date=date(2027, 2, 28),
+            )
+        ]
 
 
 def _etag(response) -> str:
@@ -35,9 +57,11 @@ def service(repo, logger):
         repo,
         logger,
         recipe_client=StaticRecipeClient(),
+        household_member_repository=InMemoryHouseholdMemberRepository(),
         tenant_preferences_repository=InMemoryTenantPreferencesRepository(),
         household_schedule_repository=InMemoryHouseholdScheduleRepository(),
         school_vacation_period_repository=InMemorySchoolVacationPeriodRepository(),
+        school_vacation_calendar_client=FakeSchoolVacationCalendarClient(),
     )
 
 
@@ -48,6 +72,7 @@ def app(service, logger):
     registry.register("meal_plans", service.purge)
     fastapi_app.include_router(MealPlanRouter(service, logger).router)
     fastapi_app.include_router(TenantPreferencesRouter(service, logger).router)
+    fastapi_app.include_router(HouseholdMemberRouter(service, logger).router)
     fastapi_app.include_router(HouseholdScheduleRouter(service, logger).router)
     fastapi_app.include_router(AdminRouter(registry).router)
     fastapi_app.dependency_overrides[inject_tenant_uri] = lambda: None
@@ -94,11 +119,32 @@ async def _set_meal_slots(client: AsyncClient, meal_slots: list[dict]) -> None:
 
 
 async def _set_household_schedule(client: AsyncClient, rules: list[dict], school_zone: str | None = "A") -> None:
+    member_ids = []
+    for index in range(max((int(rule.get("headcount", 0)) for rule in rules), default=0)):
+        response = await client.post(
+            "/v1/household-members/",
+            json={
+                "name": f"Personne {index + 1}",
+                "member_type": "resident",
+                "gender": None,
+                "birth_year": None,
+                "color": "#4a90d9",
+            },
+        )
+        assert response.status_code == 201
+        member_ids.append(response.json()["data"]["uuid"])
+    named_rules = [
+        {
+            **{key: value for key, value in rule.items() if key != "headcount"},
+            "member_ids": member_ids[: int(rule.get("headcount", 0))],
+        }
+        for rule in rules
+    ]
     current = await client.get("/v1/household-schedule/")
     assert current.status_code == 200
     response = await client.put(
         "/v1/household-schedule/",
-        json={"school_zone": school_zone, "rules": rules},
+        json={"school_zone": school_zone, "schedule_mode": "members", "rules": named_rules},
         headers={"If-Match": _etag(current)},
     )
     assert response.status_code == 200
@@ -216,6 +262,28 @@ async def test_school_vacation_period_crud(client):
     )
     assert delete_response.status_code == 204
     assert (await client.get("/v1/school-vacation-periods/")).json()["data"] == []
+
+
+async def test_school_zone_and_official_vacation_sync(client):
+    schedule_response = await client.get("/v1/household-schedule/")
+    zone_response = await client.put(
+        "/v1/household-schedule/school-zone",
+        json={"school_zone": "B"},
+        headers={"If-Match": _etag(schedule_response)},
+    )
+    assert zone_response.status_code == 200
+    assert zone_response.json()["data"]["school_zone"] == "B"
+
+    sync_response = await client.post(
+        "/v1/school-vacation-periods/sync-official",
+        json={"date_start": "2027-01-01", "date_end": "2027-12-31"},
+    )
+
+    assert sync_response.status_code == 200
+    result = sync_response.json()["data"]
+    assert result["school_zone"] == "B"
+    assert result["created"] == 1
+    assert result["periods"][0]["source"] == "official"
 
 
 async def test_household_schedule_rejects_undeclared_meal_slot(client):

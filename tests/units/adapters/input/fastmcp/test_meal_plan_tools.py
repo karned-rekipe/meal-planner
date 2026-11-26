@@ -1,4 +1,5 @@
 import json
+from datetime import date
 from unittest.mock import AsyncMock, patch
 
 import fastmcp
@@ -6,10 +7,13 @@ import pytest
 
 from adapters.input.fastmcp.tools import AdminMCP, MealPlanMCP
 from adapters.output.memory.repository import (
+    InMemoryHouseholdMemberRepository,
     InMemoryHouseholdScheduleRepository,
     InMemorySchoolVacationPeriodRepository,
 )
 from application.services.meal_plan_service import MealPlanService
+from domain.models.enums import VacationPeriodSource
+from domain.models.school_vacation_period import SchoolVacationPeriod
 from tests.units.factories import DEFAULT_DATE_START, meal_plan_payload
 
 
@@ -18,13 +22,28 @@ def mcp_app():
     return fastmcp.FastMCP("test")
 
 
+class FakeSchoolVacationCalendarClient:
+    async def fetch_periods(self, school_zone, date_start, date_end):
+        return [
+            SchoolVacationPeriod(
+                source=VacationPeriodSource.OFFICIAL,
+                school_zone=school_zone,
+                name="Vacances officielles",
+                start_date=date(2027, 2, 13),
+                end_date=date(2027, 2, 28),
+            )
+        ]
+
+
 @pytest.fixture
 def service(repo, logger):
     return MealPlanService(
         repo,
         logger,
+        household_member_repository=InMemoryHouseholdMemberRepository(),
         household_schedule_repository=InMemoryHouseholdScheduleRepository(),
         school_vacation_period_repository=InMemorySchoolVacationPeriodRepository(),
+        school_vacation_calendar_client=FakeSchoolVacationCalendarClient(),
     )
 
 
@@ -153,6 +172,18 @@ async def test_purge_returns_count(client):
 
 
 async def test_household_schedule_tools(client):
+    member = _data(await client.call_tool(
+        "create_household_member",
+        {
+            "payload": {
+                "name": "Alice",
+                "member_type": "resident",
+                "gender": "female",
+                "birth_year": 2018,
+                "color": "#4a90d9",
+            },
+        },
+    ))
     current = _data(await client.call_tool("get_household_schedule", {}))
     result = await client.call_tool(
         "update_household_schedule",
@@ -166,7 +197,7 @@ async def test_household_schedule_tools(client):
                         "school_period_type": "regular",
                         "day_of_week": "monday",
                         "meal_slot_code": "lunch",
-                        "headcount": 4,
+                        "member_ids": [member["uuid"]],
                     }
                 ],
             },
@@ -175,7 +206,48 @@ async def test_household_schedule_tools(client):
 
     data = _data(result)
     assert data["school_zone"] == "A"
-    assert data["rules"][0]["headcount"] == 4
+    assert data["schedule_mode"] == "members"
+    assert data["rules"][0]["headcount"] == 1
+    assert data["rules"][0]["member_ids"] == [member["uuid"]]
+
+
+async def test_household_member_tools(client):
+    created = _data(await client.call_tool(
+        "create_household_member",
+        {
+            "payload": {
+                "name": "Aubin",
+                "member_type": "resident",
+                "gender": "male",
+                "birth_year": 2016,
+                "color": "#2E8B57",
+            },
+        },
+    ))
+    listed = _data(await client.call_tool("list_household_members", {}))
+    assert [member["uuid"] for member in listed] == [created["uuid"]]
+
+    updated = _data(await client.call_tool(
+        "update_household_member",
+        {
+            "uuid": created["uuid"],
+            "expected_version": created["version"],
+            "payload": {
+                "name": "Aubin B.",
+                "member_type": "resident",
+                "gender": "male",
+                "birth_year": 2016,
+                "color": "#7C3AED",
+            },
+        },
+    ))
+    assert updated["name"] == "Aubin B."
+
+    result = await client.call_tool(
+        "delete_household_member",
+        {"uuid": updated["uuid"], "expected_version": updated["version"]},
+    )
+    assert _data(result)["deleted"] is True
 
 
 async def test_school_vacation_period_tools(client):
@@ -221,3 +293,27 @@ async def test_school_vacation_period_tools(client):
 
     assert updated["name"] == "Vacances ajustées"
     assert _data(delete_result)["deleted"] is True
+
+
+async def test_school_zone_and_official_calendar_sync_tools(client):
+    current = _data(await client.call_tool("get_household_schedule", {}))
+    updated = _data(await client.call_tool(
+        "set_household_school_zone",
+        {
+            "expected_version": current["version"],
+            "payload": {"school_zone": "C"},
+        },
+    ))
+    assert updated["school_zone"] == "C"
+
+    result = _data(await client.call_tool(
+        "sync_official_school_vacation_periods",
+        {
+            "payload": {
+                "date_start": "2027-01-01",
+                "date_end": "2027-12-31",
+            },
+        },
+    ))
+    assert result["school_zone"] == "C"
+    assert result["created"] == 1

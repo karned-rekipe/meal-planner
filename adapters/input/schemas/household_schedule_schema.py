@@ -1,4 +1,5 @@
 from datetime import date
+from typing import Literal
 from uuid import UUID as StdUUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -31,8 +32,7 @@ class HouseholdScheduleRulePayload(BaseModel):
     school_period_type: SchoolPeriodType
     day_of_week: DayOfWeek
     meal_slot_code: SlotCode = Field(..., min_length=1, max_length=80)
-    headcount: int = Field(0, ge=0, le=20)
-    member_ids: list[StdUUID] = Field(default_factory=list)
+    member_ids: list[StdUUID] = Field(..., min_length=1, max_length=20)
 
     @field_validator("meal_slot_code", mode="before")
     @classmethod
@@ -42,17 +42,16 @@ class HouseholdScheduleRulePayload(BaseModel):
     def to_domain(
         self,
         household_schedule_id: StdUUID,
-        schedule_mode: ScheduleMode = ScheduleMode.HEADCOUNT,
     ) -> HouseholdScheduleRule:
-        computed_headcount = len(self.member_ids) if schedule_mode == ScheduleMode.MEMBERS else self.headcount
+        member_ids = list(dict.fromkeys(self.member_ids))
         return HouseholdScheduleRule(
             household_schedule_id=household_schedule_id,
             week_parity=self.week_parity,
             school_period_type=self.school_period_type,
             day_of_week=self.day_of_week,
             meal_slot_code=self.meal_slot_code,
-            headcount=computed_headcount,
-            member_ids=self.member_ids if schedule_mode == ScheduleMode.MEMBERS else [],
+            headcount=len(member_ids),
+            member_ids=member_ids,
         )
 
 
@@ -68,17 +67,27 @@ class HouseholdScheduleRuleSchema(BaseSchema):
 
 class HouseholdScheduleUpdateSchema(BaseModel):
     school_zone: SchoolZone | None = None
-    schedule_mode: ScheduleMode = ScheduleMode.HEADCOUNT
+    schedule_mode: Literal["members"] = "members"
     rules: list[HouseholdScheduleRulePayload] = Field(default_factory=list)
 
     def to_domain(self) -> HouseholdSchedule:
-        return HouseholdSchedule(school_zone=self.school_zone, schedule_mode=self.schedule_mode)
+        return HouseholdSchedule(school_zone=self.school_zone, schedule_mode=ScheduleMode.MEMBERS)
 
 
 class HouseholdScheduleSchema(BaseSchema):
     school_zone: SchoolZone | None = None
-    schedule_mode: ScheduleMode = ScheduleMode.HEADCOUNT
+    schedule_mode: Literal["members"] = "members"
     rules: list[HouseholdScheduleRuleSchema] = Field(default_factory=list)
+
+
+class HouseholdSchoolZoneUpdateSchema(BaseModel):
+    school_zone: SchoolZone | None = None
+
+
+class SchoolVacationCalendarSyncSchema(BaseModel):
+    school_zone: SchoolZone | None = None
+    date_start: date | None = None
+    date_end: date | None = None
 
 
 class SchoolVacationPeriodPayload(BaseModel):
@@ -108,10 +117,21 @@ class SchoolVacationPeriodSchema(BaseSchema):
     end_date: date
 
 
+class SchoolVacationCalendarSyncResultSchema(BaseModel):
+    school_zone: SchoolZone
+    date_start: date
+    date_end: date
+    created: int
+    updated: int
+    deleted: int
+    periods: list[SchoolVacationPeriodSchema]
+
+
 def household_schedule_to_schema(
     schedule: HouseholdSchedule,
     rules: list[HouseholdScheduleRule],
 ) -> HouseholdScheduleSchema:
     payload = schedule.model_dump()
+    payload["schedule_mode"] = "members"
     payload["rules"] = [HouseholdScheduleRuleSchema.model_validate(rule, from_attributes=True) for rule in rules]
     return HouseholdScheduleSchema.model_validate(payload)

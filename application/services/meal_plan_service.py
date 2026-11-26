@@ -13,6 +13,7 @@ from domain.exceptions import (
     InvalidStatusTransition,
     MealPlanNotFound,
     OverlapWithConfirmedPlan,
+    SchoolVacationCalendarUnavailable,
     SchoolVacationPeriodNotFound,
     VersionConflict,
 )
@@ -25,6 +26,7 @@ from domain.models.enums import (
     SchoolPeriodType,
     SchoolZone,
     SlotCode,
+    VacationPeriodSource,
     WeekParity,
 )
 from domain.models.household_member import HouseholdMember
@@ -41,6 +43,7 @@ from domain.ports.output.household_schedule_repository import HouseholdScheduleR
 from domain.ports.output.household_member_repository import HouseholdMemberRepository
 from domain.ports.output.meal_plan_repository import MealPlanRepository
 from domain.ports.output.recipe_client import RecipeClient
+from domain.ports.output.school_vacation_calendar_client import SchoolVacationCalendarClient
 from domain.ports.output.school_vacation_period_repository import SchoolVacationPeriodRepository
 from domain.ports.output.tenant_preferences_repository import TenantPreferencesRepository
 
@@ -124,6 +127,7 @@ class MealPlanService(BaseService[MealPlan]):
         household_schedule_repository: HouseholdScheduleRepository | None = None,
         household_member_repository: HouseholdMemberRepository | None = None,
         school_vacation_period_repository: SchoolVacationPeriodRepository | None = None,
+        school_vacation_calendar_client: SchoolVacationCalendarClient | None = None,
     ) -> None:
         super().__init__(repository, logger, retention_days)
         self._meal_plan_repo = repository
@@ -132,6 +136,7 @@ class MealPlanService(BaseService[MealPlan]):
         self._household_schedule_repo = household_schedule_repository
         self._household_member_repo = household_member_repository
         self._school_vacation_period_repo = school_vacation_period_repository
+        self._school_vacation_calendar_client = school_vacation_calendar_client
         self._idempotency_cache: dict[str, MealPlan] = {}
 
     async def create(self, entity: MealPlan, idempotency_key: str | None = None) -> MealPlan:
@@ -399,6 +404,8 @@ class MealPlanService(BaseService[MealPlan]):
         schedule = await self._household_schedule_repo.get_singleton()
         if schedule is None:
             schedule = await self._household_schedule_repo.save_singleton(HouseholdSchedule())
+        elif schedule.schedule_mode != ScheduleMode.MEMBERS:
+            schedule = schedule.model_copy(update={"schedule_mode": ScheduleMode.MEMBERS})
         rules = await self._household_schedule_repo.list_rules(schedule.uuid)
         return schedule, rules
 
@@ -420,12 +427,31 @@ class MealPlanService(BaseService[MealPlan]):
                 "updated_at": datetime.now(timezone.utc),
             },
         )
-        normalized_rules = await self._normalize_household_schedule_rules(existing.uuid, schedule.schedule_mode, rules)
+        normalized_rules = await self._normalize_household_schedule_rules(existing.uuid, rules)
         if self._household_schedule_repo is None:
             return updated, normalized_rules
         saved_schedule = await self._household_schedule_repo.save_singleton(updated)
         saved_rules = await self._household_schedule_repo.replace_rules(saved_schedule.uuid, normalized_rules)
         return saved_schedule, saved_rules
+
+    async def update_household_school_zone(
+        self,
+        school_zone: SchoolZone | None,
+        expected_version: int,
+    ) -> HouseholdSchedule:
+        existing, _ = await self.get_household_schedule()
+        self._assert_version(existing, expected_version)
+        updated = existing.model_copy(
+            update={
+                "school_zone": school_zone,
+                "schedule_mode": ScheduleMode.MEMBERS,
+                "version": existing.version + 1,
+                "updated_at": datetime.now(timezone.utc),
+            },
+        )
+        if self._household_schedule_repo is None:
+            return updated
+        return await self._household_schedule_repo.save_singleton(updated)
 
     async def list_household_members(self) -> list[HouseholdMember]:
         if self._household_member_repo is None:
@@ -523,6 +549,151 @@ class MealPlanService(BaseService[MealPlan]):
         if self._school_vacation_period_repo is None:
             return
         await self._school_vacation_period_repo.delete(uuid)
+
+    async def sync_official_school_vacation_periods(
+        self,
+        school_zone: SchoolZone | None = None,
+        date_start: date | None = None,
+        date_end: date | None = None,
+    ) -> tuple[SchoolZone, date, date, int, int, int, list[SchoolVacationPeriod]]:
+        schedule, _ = await self.get_household_schedule()
+        resolved_zone, range_start, range_end = self._resolve_official_calendar_request(
+            school_zone or schedule.school_zone,
+            date_start,
+            date_end,
+        )
+        incoming = await self._fetch_official_school_vacation_periods(resolved_zone, range_start, range_end)
+        if self._school_vacation_period_repo is None:
+            return resolved_zone, range_start, range_end, len(incoming), 0, 0, incoming
+
+        existing = await self._list_official_school_vacation_periods(resolved_zone, range_start, range_end)
+        created_count, updated_count, stale_periods, synced_periods = (
+            await self._reconcile_official_school_vacation_periods(incoming, existing)
+        )
+        return (
+            resolved_zone,
+            range_start,
+            range_end,
+            created_count,
+            updated_count,
+            len(stale_periods),
+            synced_periods,
+        )
+
+    @staticmethod
+    def _resolve_official_calendar_request(
+        school_zone: SchoolZone | None,
+        date_start: date | None,
+        date_end: date | None,
+    ) -> tuple[SchoolZone, date, date]:
+        if school_zone is None:
+            raise InvalidMealPlanOperation("Une zone scolaire doit être définie avant de récupérer le calendrier officiel.")
+        range_start = date_start or date(date.today().year, 1, 1)
+        range_end = date_end or date(date.today().year + 2, 12, 31)
+        if range_end < range_start:
+            raise InvalidMealPlanOperation("date_end must be greater than or equal to date_start")
+        return school_zone, range_start, range_end
+
+    async def _fetch_official_school_vacation_periods(
+        self,
+        school_zone: SchoolZone,
+        date_start: date,
+        date_end: date,
+    ) -> list[SchoolVacationPeriod]:
+        if self._school_vacation_calendar_client is None:
+            raise InvalidMealPlanOperation("Le client du calendrier officiel n'est pas configuré.")
+        periods = await self._school_vacation_calendar_client.fetch_periods(school_zone, date_start, date_end)
+        if not periods:
+            raise SchoolVacationCalendarUnavailable(
+                "Le calendrier officiel n'a retourné aucune période pour la zone et les dates demandées."
+            )
+        return periods
+
+    async def _list_official_school_vacation_periods(
+        self,
+        school_zone: SchoolZone,
+        date_start: date,
+        date_end: date,
+    ) -> list[SchoolVacationPeriod]:
+        if self._school_vacation_period_repo is None:
+            return []
+        return [
+            period
+            for period in await self._school_vacation_period_repo.find_all()
+            if not period.is_deleted
+            and period.source == VacationPeriodSource.OFFICIAL
+            and period.school_zone == school_zone
+            and period.end_date >= date_start
+            and period.start_date <= date_end
+        ]
+
+    async def _reconcile_official_school_vacation_periods(
+        self,
+        incoming: list[SchoolVacationPeriod],
+        existing: list[SchoolVacationPeriod],
+    ) -> tuple[int, int, list[SchoolVacationPeriod], list[SchoolVacationPeriod]]:
+        remaining_by_name: dict[str, list[SchoolVacationPeriod]] = {}
+        for period in existing:
+            remaining_by_name.setdefault(period.name, []).append(period)
+
+        created_count = 0
+        updated_count = 0
+        synced_periods: list[SchoolVacationPeriod] = []
+        matched_uuids: set[UUID] = set()
+        for period in incoming:
+            synced, was_created, was_updated = await self._upsert_official_school_vacation_period(
+                period,
+                remaining_by_name.get(period.name, []),
+                matched_uuids,
+            )
+            synced_periods.append(synced)
+            matched_uuids.add(synced.uuid)
+            created_count += int(was_created)
+            updated_count += int(was_updated)
+
+        stale_periods = [period for period in existing if period.uuid not in matched_uuids]
+        if self._school_vacation_period_repo is not None:
+            for period in stale_periods:
+                await self._school_vacation_period_repo.delete(period.uuid)
+
+        synced_periods.sort(key=lambda period: (period.start_date, period.end_date, period.name))
+        return created_count, updated_count, stale_periods, synced_periods
+
+    async def _upsert_official_school_vacation_period(
+        self,
+        incoming: SchoolVacationPeriod,
+        candidates: list[SchoolVacationPeriod],
+        matched_uuids: set[UUID],
+    ) -> tuple[SchoolVacationPeriod, bool, bool]:
+        exact = next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate.start_date == incoming.start_date and candidate.end_date == incoming.end_date
+            ),
+            None,
+        )
+        if exact is not None:
+            return exact, False, False
+
+        candidate = next((item for item in candidates if item.uuid not in matched_uuids), None)
+        if candidate is None:
+            if self._school_vacation_period_repo is None:
+                return incoming, True, False
+            return await self._school_vacation_period_repo.create(incoming), True, False
+
+        updated = incoming.model_copy(
+            update={
+                "uuid": candidate.uuid,
+                "created_at": candidate.created_at,
+                "created_by": candidate.created_by,
+                "version": candidate.version + 1,
+                "updated_at": datetime.now(timezone.utc),
+            },
+        )
+        if self._school_vacation_period_repo is None:
+            return updated, False, True
+        return await self._school_vacation_period_repo.update(updated), False, True
 
     async def build_shopping_projection(self, uuid: UUID) -> dict:
         plan = await self._get_existing(uuid)
@@ -737,7 +908,7 @@ class MealPlanService(BaseService[MealPlan]):
         if not rules:
             return plan
 
-        active_member_ids = await self._active_household_member_ids() if schedule.schedule_mode == ScheduleMode.MEMBERS else None
+        active_member_ids = await self._active_household_member_ids()
         rule_by_key = {
             (rule.week_parity, rule.school_period_type, rule.day_of_week, rule.meal_slot_code): rule
             for rule in rules
@@ -765,15 +936,12 @@ class MealPlanService(BaseService[MealPlan]):
             if rule is None:
                 slots.append(slot)
                 continue
-            headcount = rule.headcount
-            member_ids: list[UUID] = []
-            if schedule.schedule_mode == ScheduleMode.MEMBERS:
-                member_ids = [
-                    member_id
-                    for member_id in rule.member_ids
-                    if active_member_ids is None or member_id in active_member_ids
-                ]
-                headcount = len(member_ids)
+            member_ids = [
+                member_id
+                for member_id in rule.member_ids
+                if active_member_ids is None or member_id in active_member_ids
+            ]
+            headcount = len(member_ids)
             slots.append(
                 slot.model_copy(
                     update={
@@ -1187,21 +1355,22 @@ class MealPlanService(BaseService[MealPlan]):
     async def _normalize_household_schedule_rules(
         self,
         household_schedule_id: UUID,
-        schedule_mode: ScheduleMode,
         rules: list[HouseholdScheduleRule],
     ) -> list[HouseholdScheduleRule]:
-        active_member_ids = await self._active_household_member_ids() if schedule_mode == ScheduleMode.MEMBERS else None
+        active_member_ids = await self._active_household_member_ids()
         normalized_rules: list[HouseholdScheduleRule] = []
         for rule in rules:
             updates: dict[str, object] = {"household_schedule_id": household_schedule_id}
-            if schedule_mode == ScheduleMode.MEMBERS:
-                member_ids = [
-                    member_id
-                    for member_id in rule.member_ids
-                    if active_member_ids is None or member_id in active_member_ids
-                ]
-                updates["member_ids"] = member_ids
-                updates["headcount"] = len(member_ids)
+            member_ids = list(dict.fromkeys(rule.member_ids))
+            unknown_member_ids = [
+                member_id
+                for member_id in member_ids
+                if active_member_ids is not None and member_id not in active_member_ids
+            ]
+            if unknown_member_ids:
+                raise InvalidMealPlanOperation("household schedule rule references unknown household members")
+            updates["member_ids"] = member_ids
+            updates["headcount"] = len(member_ids)
             normalized_rules.append(rule.model_copy(update=updates))
         return normalized_rules
 

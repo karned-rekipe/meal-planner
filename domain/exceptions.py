@@ -49,3 +49,7 @@ class SchoolVacationPeriodNotFound(MealPlannerError):
 
 class HouseholdMemberNotFound(MealPlannerError):
     """Raised when a household member cannot be found."""
+
+
+class SchoolVacationCalendarUnavailable(MealPlannerError):
+    """Raised when the official school vacation calendar cannot be retrieved."""
