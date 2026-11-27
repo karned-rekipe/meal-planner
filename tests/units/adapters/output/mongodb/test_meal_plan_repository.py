@@ -10,6 +10,7 @@ from adapters.output.mongodb.repositories.meal_plan_repository import MongoDBMea
 from domain.models.enums import MealItemType, MealPlanStatus
 from domain.models.meal_item import MealItem
 from domain.models.meal_slot import MealSlot
+from domain.models.recipe_preparation import RecipePreparationProgress, RecipePreparationTimer
 from domain.models.recipe_snapshot import RecipeSnapshot
 from tests.units.factories import meal_plan
 
@@ -133,6 +134,37 @@ async def test_mongodb_repository_crud_queries_and_filtered_reads(monkeypatch, l
         query["$and"][1].get("name", {}).get("$regex") == r"Mongo\.\*"
         for query in find_queries
         if "$and" in query
+    )
+
+
+def test_mongodb_repository_round_trips_recipe_preparation_progress(logger):
+    repository = _repository(logger)
+    plan, _ = _recipe_plan()
+    ringing_since = datetime(2026, 11, 26, 18, 3, tzinfo=timezone.utc)
+    progress = RecipePreparationProgress(
+        target_servings=6,
+        completed_step_ids=["step:1"],
+        timers=[
+            RecipePreparationTimer(
+                timer_id="step:1:cooking",
+                duration_seconds=180,
+                remaining_seconds=0,
+                status="ringing",
+                ringing_since=ringing_since,
+            )
+        ],
+    )
+    item = plan.slots[0].items[0].model_copy(update={"preparation_progress": progress})
+    plan = plan.model_copy(
+        update={"slots": [plan.slots[0].model_copy(update={"items": [item]})]},
+    )
+
+    restored = repository._from_doc(repository._to_doc(plan))
+
+    assert restored.slots[0].items[0].preparation_progress == progress
+    assert (
+        restored.slots[0].items[0].preparation_progress.timers[0].ringing_since
+        == ringing_since
     )
 
 

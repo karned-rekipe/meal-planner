@@ -37,6 +37,7 @@ from domain.models.legacy_meal_plan_entry import LegacyMealPlanEntry
 from domain.models.meal_item import MealItem
 from domain.models.meal_plan import MealPlan
 from domain.models.meal_slot import MealSlot
+from domain.models.recipe_preparation import RecipePreparationProgress
 from domain.models.recipe_snapshot import RecipeSnapshot
 from domain.models.school_vacation_period import SchoolVacationPeriod
 from domain.models.tenant_preferences import TenantPreferences
@@ -86,6 +87,7 @@ class MealItemInput(BaseModel):
     member_ids: list[UUID] = Field(default_factory=list)
     recipe_uuid: UUID | None = None
     recipe_snapshot: RecipeSnapshot | None = None
+    preparation_progress: RecipePreparationProgress | None = None
     ingredient_uuid: UUID | None = None
     ingredient_name: str | None = None
     ingredient_quantity: float | None = Field(None, ge=0)
@@ -95,7 +97,15 @@ class MealItemInput(BaseModel):
 
 
 class SlotPatchOperation(BaseModel):
-    op: Literal["set_headcount", "set_members", "add_item", "update_item", "remove_item", "reorder_items"]
+    op: Literal[
+        "set_headcount",
+        "set_members",
+        "add_item",
+        "update_item",
+        "remove_item",
+        "reorder_items",
+        "set_preparation_progress",
+    ]
     slot_date: date
     slot_code: SlotCode = Field(..., min_length=1, max_length=80)
     headcount: int | None = Field(None, ge=0, le=20)
@@ -103,6 +113,7 @@ class SlotPatchOperation(BaseModel):
     item_uuid: UUID | None = None
     item: MealItemInput | None = None
     new_positions: dict[UUID, int] | None = None
+    preparation_progress: RecipePreparationProgress | None = None
 
     @field_validator("slot_code", mode="before")
     @classmethod
@@ -1154,6 +1165,7 @@ class MealPlanService(BaseService[MealPlan]):
             "member_ids": item.member_ids,
             "recipe_uuid": item.recipe_uuid,
             "recipe_snapshot": snapshot,
+            "preparation_progress": item.preparation_progress,
             "ingredient_uuid": item.ingredient_uuid,
             "ingredient_name": ingredient_name,
             "ingredient_quantity": item.ingredient_quantity,
@@ -1250,6 +1262,24 @@ class MealPlanService(BaseService[MealPlan]):
             if operation.new_positions is None:
                 raise InvalidMealPlanOperation("reorder_items requires new_positions")
             slot = slot.model_copy(update={"items": self._reorder(slot.items, operation.new_positions)})
+        elif operation.op == "set_preparation_progress":
+            if operation.item_uuid is None or operation.preparation_progress is None:
+                raise InvalidMealPlanOperation(
+                    "set_preparation_progress requires item_uuid and preparation_progress",
+                )
+            updated_items: list[MealItem] = []
+            found = False
+            for item in slot.items:
+                if item.uuid != operation.item_uuid:
+                    updated_items.append(item)
+                    continue
+                found = True
+                if item.item_type != MealItemType.RECIPE:
+                    raise InvalidMealPlanOperation("preparation progress is only available for recipe items")
+                updated_items.append(item.model_copy(update={"preparation_progress": operation.preparation_progress}))
+            if not found:
+                raise InvalidMealPlanOperation(f"item {operation.item_uuid} not found")
+            slot = slot.model_copy(update={"items": updated_items})
         slots[slot_index] = slot
         return slots
 

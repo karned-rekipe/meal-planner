@@ -9,6 +9,7 @@ from domain.models.enums import HeadcountSource, MealItemType, MealPlanStatus, S
 from domain.models.meal_item import MealItem
 from domain.models.meal_plan import MealPlan
 from domain.models.meal_slot import MealSlot
+from domain.models.recipe_preparation import RecipePreparationProgress
 from domain.models.recipe_snapshot import RecipeSnapshot
 
 
@@ -48,6 +49,27 @@ class RecipeSnapshotSchema(BaseModel):
     recipe_version: int | None = None
 
 
+class RecipePreparationTimerSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    timer_id: str
+    duration_seconds: int
+    remaining_seconds: int
+    status: str
+    started_at: datetime | None = None
+    ringing_since: datetime | None = None
+
+
+class RecipePreparationProgressSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    target_servings: int
+    completed_ingredient_ids: list[str] = Field(default_factory=list)
+    completed_equipment_ids: list[str] = Field(default_factory=list)
+    completed_step_ids: list[str] = Field(default_factory=list)
+    timers: list[RecipePreparationTimerSchema] = Field(default_factory=list)
+
+
 class MealItemPayload(BaseModel):
     uuid: StdUUID | None = None
     position: int | None = Field(None, ge=0)
@@ -56,6 +78,7 @@ class MealItemPayload(BaseModel):
     member_ids: list[StdUUID] = Field(default_factory=list)
     recipe_uuid: StdUUID | None = None
     recipe_snapshot: RecipeSnapshot | None = None
+    preparation_progress: RecipePreparationProgress | None = None
     ingredient_uuid: StdUUID | None = None
     ingredient_name: str | None = None
     ingredient_quantity: float | None = Field(None, ge=0)
@@ -79,6 +102,7 @@ class MealItemSchema(BaseModel):
     recipe_snapshot: RecipeSnapshotSchema | None = None
     recipe_status: str | None = None
     recipe_modified: bool = False
+    preparation_progress: RecipePreparationProgressSchema | None = None
     ingredient_uuid: StdUUID | None = None
     ingredient_name: str | None = None
     ingredient_quantity: float | None = None
@@ -144,6 +168,7 @@ class SlotPatchOperationSchema(BaseModel):
     item_uuid: StdUUID | None = None
     item: MealItemPayload | None = None
     new_positions: dict[StdUUID, int] | None = None
+    preparation_progress: RecipePreparationProgress | None = None
 
     @field_validator("slot_code", mode="before")
     @classmethod

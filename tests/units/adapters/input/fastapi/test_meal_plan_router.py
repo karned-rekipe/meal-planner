@@ -514,6 +514,67 @@ async def test_calendar_patch_adds_recipe_with_item_headcount(client):
     assert slot["items"][0]["headcount"] == 4
 
 
+async def test_calendar_patch_persists_recipe_preparation_progress(client):
+    target_date = date.today() + timedelta(days=180)
+    recipe_uuid = str(uuid4())
+    create_response = await client.patch(
+        "/v1/meal-plans/calendar",
+        params={"date_from": target_date.isoformat(), "date_to": target_date.isoformat()},
+        json={
+            "operations": [
+                {
+                    "op": "add_item",
+                    "slot_date": target_date.isoformat(),
+                    "slot_code": "dinner",
+                    "item": {"item_type": "recipe", "recipe_uuid": recipe_uuid, "headcount": 4},
+                }
+            ]
+        },
+    )
+    item = next(
+        slot for slot in create_response.json()["data"]["slots"] if slot["slot_code"] == "dinner"
+    )["items"][0]
+
+    response = await client.patch(
+        "/v1/meal-plans/calendar",
+        params={"date_from": target_date.isoformat(), "date_to": target_date.isoformat()},
+        json={
+            "operations": [
+                {
+                    "op": "set_preparation_progress",
+                    "slot_date": target_date.isoformat(),
+                    "slot_code": "dinner",
+                    "item_uuid": item["uuid"],
+                    "preparation_progress": {
+                        "target_servings": 6,
+                        "completed_ingredient_ids": ["ingredient:carotte:0"],
+                        "completed_equipment_ids": ["equipment:casserole:0"],
+                        "completed_step_ids": ["step:1"],
+                        "timers": [
+                            {
+                                "timer_id": "step:1:cooking",
+                                "duration_seconds": 180,
+                                "remaining_seconds": 0,
+                                "status": "ringing",
+                                "ringing_since": "2026-11-26T18:03:00Z",
+                            }
+                        ],
+                    },
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    dinner = next(slot for slot in response.json()["data"]["slots"] if slot["slot_code"] == "dinner")
+    progress = dinner["items"][0]["preparation_progress"]
+    assert progress["target_servings"] == 6
+    assert progress["completed_ingredient_ids"] == ["ingredient:carotte:0"]
+    assert progress["timers"][0]["remaining_seconds"] == 0
+    assert progress["timers"][0]["status"] == "ringing"
+    assert progress["timers"][0]["ringing_since"] == "2026-11-26T18:03:00Z"
+
+
 async def test_calendar_patch_can_create_global_custom_meal_slot(client):
     target_date = date.today() + timedelta(days=180)
     await _set_meal_slots(
